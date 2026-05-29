@@ -22,6 +22,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
 import {
   ACTIVITIES,
+  CHANT_RESPONSE_TEXT,
   CUES,
   DEFAULT_PATTERNS,
   getLeastPopulatedGroup,
@@ -160,6 +161,44 @@ export async function updateRoomTitle(roomCode, title) {
   return cleanTitle;
 }
 
+export async function updateChantText(roomCode, text) {
+  const code = normalizeRoomCode(roomCode);
+  const cleanText = String(text || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .slice(0, 180) || CHANT_RESPONSE_TEXT;
+
+  await set(ref(db, `rooms/${code}/chantText`), cleanText);
+  touchRoom(code);
+  return cleanText;
+}
+
+export async function updateGroupLocation(roomCode, groupId, location) {
+  const code = normalizeRoomCode(roomCode);
+  const key = String(Number(groupId));
+  const cleanLocation = String(location || "").trim().replace(/\s+/g, " ").slice(0, 60);
+  await set(ref(db, `rooms/${code}/groupLocations/${key}`), cleanLocation);
+  touchRoom(code);
+  return cleanLocation;
+}
+
+export async function updateProjectorState(roomCode, data = {}) {
+  const code = normalizeRoomCode(roomCode);
+  const view = ["all", "chant", "group", "intro"].includes(data.view) ? data.view : "all";
+  const activeGroup = Number(data.activeGroup || 0);
+  const payload = {
+    view,
+    activeGroup: activeGroup >= 1 && activeGroup <= 4 ? activeGroup : null,
+    updatedAt: serverTimestamp(),
+    updatedAtClient: Date.now()
+  };
+  if (data.introSlide !== undefined) {
+    payload.introSlide = Math.max(0, Math.min(12, Math.round(Number(data.introSlide) || 0)));
+  }
+  await update(ref(db, `rooms/${code}/projector`), payload);
+  touchRoom(code);
+}
+
 export async function claimHostRoom(roomCode) {
   const code = normalizeRoomCode(roomCode);
   const user = await getCurrentUser();
@@ -183,7 +222,7 @@ export async function joinRoom(roomCode, participantDraft) {
   }
 
   const selectedGroup = Number(participantDraft.group || 0);
-  const group = selectedGroup >= 1 && selectedGroup <= 5
+  const group = selectedGroup >= 1 && selectedGroup <= 4
     ? selectedGroup
     : getLeastPopulatedGroup(room.participants || {});
 
@@ -404,6 +443,13 @@ function createDefaultRoom(hostUid) {
       updatedAtClient: Date.now()
     },
     patterns: sanitizePatterns(DEFAULT_PATTERNS),
+    chantText: CHANT_RESPONSE_TEXT,
+    groupLocations: {},
+    projector: {
+      view: "all",
+      activeGroup: null,
+      updatedAtClient: Date.now()
+    },
     participants: {}
   };
 }

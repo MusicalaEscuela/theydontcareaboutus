@@ -18,6 +18,9 @@ import {
   updateMetronome,
   updateMode,
   updateRoomTitle,
+  updateChantText,
+  updateGroupLocation,
+  updateProjectorState,
   listenPatterns,
   updateGroupPattern,
   updatePatterns,
@@ -27,6 +30,7 @@ import {
 } from "./room.service.js";
 import {
   ACTIVITIES,
+  CHANT_RESPONSE_TEXT,
   CUES,
   GROUPS,
   HOST_SEQUENCE,
@@ -44,6 +48,10 @@ import {
 import { AudioEngine, AUDIO_PRESETS } from "./audio.engine.js";
 import { DEMO_TRACKS } from "./demo-tracks.js";
 
+const CHANT_AUDIO_SRC = "assets/audio/chant-phrase.mp3";
+const FINAL_VOCALS_AUDIO_SRC = "assets/audio/final-vocals.mp3";
+const FINAL_CHORUS_CUE_SECONDS = [11, 16, 32, 37, 75, 80, 128, 134, 182, 187, 192, 198, 200, 204];
+
 let currentRoomCode = "MJ30";
 let isHostOwner = false;
 let roomState = null;
@@ -58,6 +66,9 @@ let savePatternTimer = null;
 let visualMetroTimer = null;
 let visualMetroBeat = 0;
 let audioEngine = null;
+let localChantText = CHANT_RESPONSE_TEXT;
+let finaleCueTimer = null;
+let finaleCueTimers = [];
 
 export async function initHost(roomCode) {
   currentRoomCode = normalizeRoomCode(roomCode);
@@ -68,6 +79,7 @@ export async function initHost(roomCode) {
     const result = await createOrOpenRoom(currentRoomCode);
     isHostOwner = result.isHostOwner;
     roomState = result.room;
+    localChantText = roomState?.chantText || CHANT_RESPONSE_TEXT;
     if (isHostOwner && !result.room?.patterns) {
       await updatePatterns(currentRoomCode, DEFAULT_PATTERNS);
       roomState = { ...roomState, patterns: clonePatterns(DEFAULT_PATTERNS) };
@@ -130,6 +142,20 @@ function renderHostPanel(roomCode, result) {
         </div>
       </section>
 
+      <section class="host-card intro-control-card">
+        <div class="section-heading">
+          <h2>Presentación de intro</h2>
+          <span id="intro-slide-status">Pantallas restaurante</span>
+        </div>
+        <p class="control-help">Controla desde aquí la intro que aparece en las pantallas del restaurante. Abre la pantalla en <code>?admin=1&room=${escapeHtml(roomCode)}</code>.</p>
+        <div class="intro-control-actions">
+          <button class="primary-action" data-projector-intro="start" type="button">Iniciar intro</button>
+          <button class="ghost-button" data-projector-intro="prev" type="button">Anterior</button>
+          <button class="secondary-action" data-projector-intro="next" type="button">Siguiente</button>
+          <button class="ghost-button" data-projector-intro="end" type="button">Volver a actividad</button>
+        </div>
+      </section>
+
       <section class="host-card room-config-card">
         <div class="section-heading">
           <h2>Configuración de sala</h2>
@@ -160,17 +186,7 @@ function renderHostPanel(roomCode, result) {
         </div>
       </section>
 
-      <section class="host-grid-layout">
-        <article class="host-card share-card">
-          <div class="section-heading">
-            <h2>Entrada del público</h2>
-            <span>QR / URL</span>
-          </div>
-          <div class="url-box" id="participant-url">${escapeHtml(participantUrl)}</div>
-          <button id="copy-url-btn" class="secondary-action" type="button">Copiar URL participante</button>
-        </article>
-
-        <article class="host-card current-card">
+      <section class="host-grid-layout"><article class="host-card current-card">
           <div class="section-heading">
             <h2>Estado actual</h2>
             <span id="room-mode-pill" class="mini-pill">Ensayo</span>
@@ -183,6 +199,22 @@ function renderHostPanel(roomCode, result) {
             </div>
           </div>
         </article>
+      </section>
+
+      <section class="host-card group-location-card">
+        <div class="section-heading">
+          <h2>Lugares por grupo</h2>
+          <span>Restaurante</span>
+        </div>
+        <p class="control-help">Asigna una zona real del restaurante a cada grupo sin cambiar sus nombres.</p>
+        <div class="group-location-grid">
+          ${GROUPS.map((group) => `
+            <label class="audio-field" style="--group-color:${group.color}; --group-soft:${group.softColor};">
+              <span>${group.name}</span>
+              <input class="text-input" data-group-location="${group.id}" type="text" maxlength="60" value="${escapeHtml(roomState?.groupLocations?.[String(group.id)] || "")}" placeholder="Ej: barra, terraza, mesa 4" />
+            </label>
+          `).join("")}
+        </div>
       </section>
 
       <section class="host-grid-layout controls-layout">
@@ -257,18 +289,26 @@ function renderHostPanel(roomCode, result) {
           <button id="clear-patterns" class="ghost-button is-danger-soft" type="button">Limpiar todo</button>
         </div>
 
-        <div class="composer-time-editor">
-          <div class="section-heading compact-heading">
-            <h3>Editor rápido por tiempos</h3>
-            <span>1, 2, 3, 4</span>
+        <div class="group-playback-controls">
+          <div>
+            <strong>Reproducción por grupos</strong>
+            <small>Usa los patrones editables de esta caja. No modifica Firebase.</small>
           </div>
-          <div id="time-combo-grid" class="time-combo-grid">
-            ${renderTimeComboEditor()}
+          <button id="groups-play" class="secondary-action" type="button">▶ Reproducir por grupos</button>
+          <button id="groups-pause" class="ghost-button" type="button">⏸ Pausar grupos</button>
+          <button id="groups-stop" class="ghost-button" type="button">■ Detener grupos</button>
+          <button id="all-audio-stop" class="ghost-button is-danger-soft" type="button">Detener todo</button>
+        </div>
+
+        <div class="projector-controls">
+          <div>
+            <strong>Pantalla restaurante</strong>
+            <small>Abre <code>?admin=1&room=${escapeHtml(roomCode)}</code> en la pantalla que vas a proyectar.</small>
           </div>
-          <div class="audio-controls">
-            <button id="apply-time-combo" class="secondary-action" type="button">Aplicar combinación</button>
-            <button id="apply-time-combo-clean" class="ghost-button" type="button">Aplicar y limpiar intermedios</button>
-          </div>
+          <button class="secondary-action" data-projector-view="intro" type="button">Intro MJ</button>
+          <button class="ghost-button" data-projector-view="all" type="button">Ver 4 grupos</button>
+          ${GROUPS.map((group) => `<button class="ghost-button" data-projector-view="group" data-projector-group="${group.id}" type="button">${group.emoji} ${group.name}</button>`).join("")}
+          <button class="secondary-action" data-projector-view="chant" type="button">Letra al centro</button>
         </div>
 
         <div class="drum-scroll" role="region" aria-label="Caja de ritmos editable" tabindex="0">
@@ -335,20 +375,44 @@ function renderHostPanel(roomCode, result) {
             <button id="track-play" class="secondary-action" type="button">▶ Pista</button>
             <button id="track-pause" class="ghost-button" type="button">⏸ Pausar</button>
             <button id="track-stop" class="ghost-button" type="button">■ Detener</button>
+          </div></div>
+
+        <div class="chant-controls">
+          <div class="section-heading compact-heading">
+            <h3>Frase coral</h3>
+            <span id="chant-status" class="track-status">Sin cargar</span>
           </div>
-
           <label class="audio-field full-width">
-            <span>URL directa de audio (.mp3, .wav, .ogg, .m4a)</span>
-            <div class="url-audio-row">
-              <input id="track-url" class="text-input" type="url" placeholder="https://.../beat.mp3" />
-              <button id="use-track-url" class="secondary-action" type="button">Usar URL</button>
-            </div>
+            <span>Letra visible para el público</span>
+            <input id="chant-text-input" class="text-input" type="text" maxlength="180" value="${escapeHtml(localChantText || roomState?.chantText || CHANT_RESPONSE_TEXT)}" />
           </label>
-
+          <div class="audio-controls chant-main-actions">
+            <button id="send-chant-cue" class="primary-action chant-launch-button" type="button">🎤 Frase coral</button>
+            <button id="stop-chant" class="ghost-button" type="button">Detener</button>
+          </div>
           <label class="audio-field">
-            <span>Volumen pista</span>
-            <input id="track-volume" class="range-input" type="range" min="0" max="100" value="80" />
+            <span>Volumen frase</span>
+            <input id="chant-volume" class="range-input" type="range" min="0" max="100" value="85" />
           </label>
+          <p class="control-help">Pon la pista vocal en <code>assets/audio/chant-phrase.mp3</code>. Este sonido se lanza encima del beat.</p>
+        </div>
+
+        <div class="finale-controls">
+          <div class="section-heading compact-heading">
+            <h3>Gran final</h3>
+            <span id="finale-status" class="track-status">Voz completa lista</span>
+          </div>
+          <div class="audio-grid">
+            <label class="audio-field">
+              <span>Volumen voz final</span>
+              <input id="finale-volume" class="range-input" type="range" min="0" max="100" value="90" />
+            </label>
+          </div>
+          <div class="audio-controls">
+            <button id="start-finale" class="primary-action" type="button">▶ Gran final</button>
+            <button id="stop-finale" class="ghost-button" type="button">Detener voz final</button>
+          </div>
+          <p class="control-help">La voz completa arranca en tiempo 1. El cue del coro se lanza en 11, 16, 32, 37, 1:15, 1:20, 2:08, 2:14, 3:02, 3:07, 3:12, 3:18, 3:20 y 3:24.</p>
         </div>
 
         <div id="audio-status" class="audio-status">Audio sin activar · BPM <b id="audio-bpm">96</b></div>
@@ -399,7 +463,6 @@ function renderHostPanel(roomCode, result) {
 }
 
 function bindHostEvents() {
-  document.getElementById("copy-url-btn").addEventListener("click", copyParticipantUrl);
   document.getElementById("claim-host-dev")?.addEventListener("click", claimHostForDevelopment);
   document.getElementById("save-room-title")?.addEventListener("click", saveVisibleRoomTitle);
   document.getElementById("open-room-code-btn")?.addEventListener("click", openAnotherRoom);
@@ -408,6 +471,11 @@ function bindHostEvents() {
       event.preventDefault();
       openAnotherRoom();
     }
+  });
+  document.querySelectorAll("[data-group-location]").forEach((input) => {
+    input.addEventListener("change", async () => {
+      await runHostAction(input, () => updateGroupLocation(currentRoomCode, input.dataset.groupLocation, input.value));
+    });
   });
 
   document.querySelectorAll(".host-cue-button").forEach((button) => {
@@ -469,16 +537,25 @@ function bindHostEvents() {
 
   document.getElementById("load-local-track").addEventListener("click", () => loadTrack("assets/audio/pista-evento.mp3"));
   document.getElementById("load-demo-track").addEventListener("click", loadSelectedDemoTrack);
-  document.getElementById("use-track-url").addEventListener("click", () => {
-    const url = document.getElementById("track-url").value.trim();
-    loadTrack(url);
-  });
   document.getElementById("track-play").addEventListener("click", playTrack);
   document.getElementById("track-pause").addEventListener("click", pauseTrack);
   document.getElementById("track-stop").addEventListener("click", stopTrack);
-  document.getElementById("track-volume").addEventListener("input", (event) => {
-    audioEngine.setTrackVolume(Number(event.currentTarget.value));
+
+  document.getElementById("send-chant-cue")?.addEventListener("click", sendChantCue);
+  document.getElementById("stop-chant")?.addEventListener("click", stopChantPhrase);
+  document.getElementById("start-finale")?.addEventListener("click", startFinale);
+  document.getElementById("stop-finale")?.addEventListener("click", stopFinale);
+  document.getElementById("chant-volume")?.addEventListener("input", (event) => {
+    audioEngine.setOneShotVolume(Number(event.currentTarget.value));
     updateAudioStatus();
+  });
+  document.getElementById("chant-text-input")?.addEventListener("input", updateLocalChantText);
+  document.getElementById("chant-text-input")?.addEventListener("change", saveChantText);
+  document.querySelectorAll("[data-channel-volume]").forEach((input) => {
+    input.addEventListener("input", () => {
+      audioEngine.setChannelVolume(input.dataset.channelVolume, Number(input.value));
+      updateChannelRows();
+    });
   });
 
   audioEngine.setOnStep((stepIndex) => {
@@ -536,10 +613,24 @@ function updateHostRoomView(room) {
 
   if (visibleTitle) visibleTitle.textContent = title;
   if (titleInput && document.activeElement !== titleInput) titleInput.value = title;
+  if (room.chantText && document.activeElement?.id !== "chant-text-input") {
+    localChantText = room.chantText;
+  }
+  const chantInput = document.getElementById("chant-text-input");
+  if (chantInput && document.activeElement !== chantInput) chantInput.value = localChantText || room.chantText || CHANT_RESPONSE_TEXT;
+  document.querySelectorAll("[data-group-location]").forEach((input) => {
+    if (document.activeElement !== input) input.value = room.groupLocations?.[String(input.dataset.groupLocation)] || "";
+  });
 
   if (activitySelect) activitySelect.value = activity.id;
   if (description) description.textContent = activity.description;
   if (modePill) modePill.textContent = room.mode === "show" ? "Show" : "Ensayo";
+  const introStatus = document.getElementById("intro-slide-status");
+  if (introStatus) {
+    introStatus.textContent = room.projector?.view === "intro"
+      ? `Intro ${Number(room.projector?.introSlide || 0) + 1} / 13`
+      : "Pantallas restaurante";
+  }
 
   document.querySelectorAll(".segment-button").forEach((button) => {
     button.classList.toggle("is-selected", button.dataset.mode === (room.mode || "rehearsal"));
@@ -556,24 +647,6 @@ function updateHostRoomView(room) {
   }
 }
 
-function renderTimeComboEditor() {
-  const timeLabels = ["Tiempo 1", "Tiempo 2", "Tiempo 3", "Tiempo 4"];
-  return timeLabels.map((label, timeIndex) => `
-    <article class="time-combo-card">
-      <strong>${label}</strong>
-      <span>Paso ${timeIndex * 4 + 1}</span>
-      <div class="combo-checkbox-group">
-        ${GROUPS.map((group) => `
-          <label>
-            <input type="checkbox" data-time-combo="${timeIndex}" data-group-combo="${group.id}" />
-            <span>${group.emoji} ${group.name}</span>
-          </label>
-        `).join("")}
-      </div>
-    </article>
-  `).join("");
-}
-
 function renderDrumGrid(patterns = DEFAULT_PATTERNS) {
   const labels = ["1", "e", "&", "a", "2", "e", "&", "a", "3", "e", "&", "a", "4", "e", "&", "a"];
   return `
@@ -584,13 +657,14 @@ function renderDrumGrid(patterns = DEFAULT_PATTERNS) {
     ${GROUPS.map((group) => {
       const pattern = getGroupPattern(patterns, group.id);
       return `
-        <div class="drum-row" style="--group-color:${pattern.color || group.color}; --group-soft:${pattern.softColor || group.softColor};">
+        <div class="drum-row" data-channel-row="${group.id}" style="--group-color:${pattern.color || group.color}; --group-soft:${pattern.softColor || group.softColor};">
           <div class="drum-row-label">
             <span>${pattern.icon || group.emoji}</span>
             <div>
               <strong>${escapeHtml(pattern.label || group.name)}</strong>
               <small>${escapeHtml(pattern.action || group.action)}</small>
             </div>
+            <button class="channel-toggle" data-channel-toggle="${group.id}" type="button">OFF</button>
           </div>
           ${pattern.steps.map((active, index) => `
             <button class="drum-step ${active ? "is-on" : ""} ${index % 4 === 0 ? "is-beat-start" : ""}"
@@ -609,9 +683,26 @@ function renderDrumGrid(patterns = DEFAULT_PATTERNS) {
 
 function bindPatternComposerEvents() {
   document.getElementById("live-drum-grid")?.addEventListener("click", async (event) => {
+    const channelToggle = event.target.closest("[data-channel-toggle]");
+    if (channelToggle) {
+      await toggleGroupChannel(channelToggle);
+      return;
+    }
+
     const cell = event.target.closest("[data-pattern-cell]");
     if (!cell) return;
     await togglePatternCell(Number(cell.dataset.groupId), Number(cell.dataset.stepIndex), cell);
+  });
+
+  document.getElementById("groups-play")?.addEventListener("click", playGroupChannels);
+  document.getElementById("groups-pause")?.addEventListener("click", pauseGroupChannels);
+  document.getElementById("groups-stop")?.addEventListener("click", stopGroupChannels);
+  document.getElementById("all-audio-stop")?.addEventListener("click", stopAllAudio);
+  document.querySelectorAll("[data-projector-view]").forEach((button) => {
+    button.addEventListener("click", () => setProjectorView(button));
+  });
+  document.querySelectorAll("[data-projector-intro]").forEach((button) => {
+    button.addEventListener("click", () => controlProjectorIntro(button));
   });
 
   document.getElementById("apply-pattern-preset")?.addEventListener("click", async (event) => {
@@ -642,8 +733,6 @@ function bindPatternComposerEvents() {
     });
   });
 
-  document.getElementById("apply-time-combo")?.addEventListener("click", (event) => applyTimeCombination(false, event.currentTarget));
-  document.getElementById("apply-time-combo-clean")?.addEventListener("click", (event) => applyTimeCombination(true, event.currentTarget));
 }
 
 async function togglePatternCell(groupId, stepIndex, control) {
@@ -679,50 +768,13 @@ async function togglePatternCell(groupId, stepIndex, control) {
   }, 160);
 }
 
-async function applyTimeCombination(cleanIntermediates, button) {
-  const next = sanitizePatterns(patternsState);
-  GROUPS.forEach((group) => {
-    const pattern = getGroupPattern(next, group.id);
-    const steps = cleanIntermediates ? Array(16).fill(false) : pattern.steps.slice();
-    [0, 4, 8, 12].forEach((stepIndex, timeIndex) => {
-      const checked = document.querySelector(`[data-time-combo="${timeIndex}"][data-group-combo="${group.id}"]`)?.checked || false;
-      steps[stepIndex] = checked;
-    });
-    next[String(group.id)] = {
-      ...pattern,
-      steps,
-      patternText: stepsToPatternText(steps),
-      helper: inferPatternHelper(steps)
-    };
-  });
-
-  await runHostAction(button, async () => {
-    setPatternStatus("Aplicando combinación…");
-    await updatePatterns(currentRoomCode, next);
-    patternsState = sanitizePatterns(next);
-    if (audioEngine) audioEngine.setLivePatterns(patternsState);
-    updatePatternComposerView(patternsState);
-    setPatternStatus("Combinación sincronizada");
-  });
-}
-
 function updatePatternComposerView(patterns) {
   const grid = document.getElementById("live-drum-grid");
   if (grid) {
     grid.innerHTML = renderDrumGrid(patterns);
     updateHostStepCursor(hostCurrentStep);
+    updateChannelRows();
   }
-  updateTimeComboEditor(patterns);
-}
-
-function updateTimeComboEditor(patterns) {
-  [0, 4, 8, 12].forEach((stepIndex, timeIndex) => {
-    GROUPS.forEach((group) => {
-      const checkbox = document.querySelector(`[data-time-combo="${timeIndex}"][data-group-combo="${group.id}"]`);
-      if (!checkbox) return;
-      checkbox.checked = Boolean(getGroupPattern(patterns, group.id).steps[stepIndex]);
-    });
-  });
 }
 
 function updateHostStepCursor(stepIndex) {
@@ -1057,6 +1109,306 @@ async function stopTrack() {
   });
 }
 
+async function toggleGroupChannel(button) {
+  await runAudioAction(button, async () => {
+    await audioEngine.toggleGroupChannel(button.dataset.channelToggle);
+    updateChannelRows();
+    updateAudioStatus();
+  });
+}
+
+async function playGroupChannels(event) {
+  const button = event?.currentTarget || document.getElementById("groups-play");
+  await runAudioAction(button, async () => {
+    await audioEngine.playGroupChannels();
+    updateChannelRows();
+    updateAudioStatus();
+  });
+}
+
+async function pauseGroupChannels(event) {
+  const button = event?.currentTarget || document.getElementById("groups-pause");
+  await runAudioAction(button, async () => {
+    audioEngine.pauseGroupChannels();
+    updateChannelRows();
+    updateAudioStatus();
+  });
+}
+
+async function stopGroupChannels(event) {
+  const button = event?.currentTarget || document.getElementById("groups-stop");
+  await runAudioAction(button, async () => {
+    audioEngine.stopAllGroupChannels();
+    updateChannelRows();
+    updateAudioStatus();
+  });
+}
+
+async function stopAllAudio(event) {
+  const button = event?.currentTarget || document.getElementById("all-audio-stop");
+  await runAudioAction(button, async () => {
+    audioEngine.stopAllGroupChannels();
+    audioEngine.stopBeat();
+    audioEngine.stopTrack();
+    audioEngine.stopOneShot("chant");
+    clearBeatLights();
+    await stopPublicPulseIfAudioStopped();
+    updateChannelRows();
+    updateAudioStatus();
+  });
+}
+
+async function setProjectorView(button) {
+  const state = {
+    view: button.dataset.projectorView,
+    activeGroup: button.dataset.projectorGroup || null,
+    introSlide: button.dataset.projectorView === "intro" ? 0 : roomState?.projector?.introSlide
+  };
+  await sendProjectorState(button, state, "Pantalla del restaurante actualizada.");
+}
+
+async function controlProjectorIntro(button) {
+  const action = button.dataset.projectorIntro;
+  const current = Number(roomState?.projector?.introSlide || 0);
+  let view = "intro";
+  let introSlide = current;
+
+  if (action === "start") introSlide = 0;
+  if (action === "prev") introSlide = Math.max(0, current - 1);
+  if (action === "next") {
+    introSlide = current + 1;
+    if (introSlide > 12) {
+      view = "all";
+      introSlide = 0;
+    }
+  }
+  if (action === "end") {
+    view = "all";
+    introSlide = 0;
+  }
+
+  await sendProjectorState(
+    button,
+    { view, introSlide },
+    view === "intro" ? `Intro ${introSlide + 1} enviada.` : "Pantallas de vuelta a actividad."
+  );
+}
+
+async function sendProjectorState(button, state, successMessage) {
+  const localState = {
+    view: state.view || "all",
+    activeGroup: state.activeGroup || null,
+    introSlide: state.introSlide ?? 0,
+    updatedAtClient: Date.now()
+  };
+  publishLocalProjectorState(localState);
+
+  const originalText = button?.textContent || "";
+  if (button) {
+    button.disabled = true;
+    button.classList.add("is-working");
+  }
+  try {
+    if (isHostOwner) await updateProjectorState(currentRoomCode, localState);
+    showHostToast(successMessage, "success");
+  } catch (error) {
+    showHostToast("Pantalla actualizada localmente. Firebase no permitió sincronizar con otros dispositivos.", "error");
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.classList.remove("is-working");
+      button.textContent = originalText;
+    }
+  }
+}
+
+function publishLocalProjectorState(state) {
+  try {
+    localStorage.setItem(`musicala-projector-${currentRoomCode}`, JSON.stringify(state));
+  } catch (error) {
+    console.warn("No se pudo publicar estado local de pantalla:", error);
+  }
+  roomState = {
+    ...(roomState || {}),
+    projector: {
+      ...(roomState?.projector || {}),
+      ...state
+    }
+  };
+  const introStatus = document.getElementById("intro-slide-status");
+  if (introStatus) {
+    introStatus.textContent = state.view === "intro" ? `Intro ${Number(state.introSlide || 0) + 1} / 13` : "Pantallas restaurante";
+  }
+}
+
+async function loadChantPhrase(event) {
+  const button = event?.currentTarget || document.getElementById("load-chant-local");
+  await runAudioAction(button, async () => {
+    await audioEngine.loadOneShot("chant", CHANT_AUDIO_SRC);
+    updateAudioStatus();
+    showHostToast("Frase coral cargada.", "success");
+  });
+}
+
+async function sendChantCue(event) {
+  const button = event?.currentTarget || document.getElementById("send-chant-cue");
+  await runAudioAction(button, async () => {
+    let cueSent = false;
+    updateLocalChantText();
+    if (isHostOwner) {
+      try {
+        await saveChantText();
+        await sendCue(currentRoomCode, "chant");
+        await updateProjectorState(currentRoomCode, { view: "chant" });
+        cueSent = true;
+      } catch (error) {
+        showHostToast(formatFirebaseWriteError(error, "La frase sonará en este equipo, pero no se pudo enviar al público."), "error");
+      }
+    }
+    try {
+      await audioEngine.loadOneShot("chant", CHANT_AUDIO_SRC);
+      audioEngine.playOneShot("chant", {
+        alignTo: "beat3",
+        volume: Number(document.getElementById("chant-volume")?.value || 85)
+      });
+      if (!cueSent && !isHostOwner) {
+        showHostToast("La frase sonó localmente. Para verla en celulares, toma control de la sala o abre la sala del host dueño.", "error");
+      }
+    } catch (error) {
+      showHostToast("No se encontró la frase coral. Revisa que exista assets/audio/chant-phrase.mp3", "error");
+    }
+    updateAudioStatus();
+  });
+}
+
+async function stopChantPhrase(event) {
+  const button = event?.currentTarget || document.getElementById("stop-chant");
+  await runAudioAction(button, async () => {
+    audioEngine.stopOneShot("chant");
+    updateAudioStatus();
+  });
+}
+
+async function startFinale(event) {
+  const button = event?.currentTarget || document.getElementById("start-finale");
+  await runAudioAction(button, async () => {
+    clearFinaleCueTimer();
+    updateLocalChantText();
+    try {
+      await audioEngine.loadOneShot("finale", FINAL_VOCALS_AUDIO_SRC);
+      const playback = audioEngine.playOneShot("finale", {
+        alignTo: "beat1",
+        volume: Number(document.getElementById("finale-volume")?.value || 90)
+      });
+      scheduleFinaleChorusCue(playback.delayMs || 0);
+      updateFinaleStatus("Voz final sonando · coro programado");
+      showHostToast("Gran final lanzado en tiempo 1.", "success");
+    } catch (error) {
+      updateFinaleStatus("No se pudo cargar la voz final");
+      showHostToast("No se encontró la voz final. Revisa que exista assets/audio/final-vocals.mp3", "error");
+    }
+    updateAudioStatus();
+  });
+}
+
+async function stopFinale(event) {
+  const button = event?.currentTarget || document.getElementById("stop-finale");
+  await runAudioAction(button, async () => {
+    clearFinaleCueTimer();
+    audioEngine.stopOneShot("finale");
+    updateFinaleStatus("Voz final detenida");
+    updateAudioStatus();
+  });
+}
+
+function scheduleFinaleChorusCue(startDelayMs) {
+  const cueSeconds = FINAL_CHORUS_CUE_SECONDS;
+  finaleCueTimers = cueSeconds.map((offsetSeconds) => window.setTimeout(async () => {
+    await triggerChorusCueFromFinale(offsetSeconds);
+  }, Math.max(0, startDelayMs + offsetSeconds * 1000)));
+}
+
+function clearFinaleCueTimer() {
+  if (finaleCueTimer) window.clearTimeout(finaleCueTimer);
+  finaleCueTimer = null;
+  finaleCueTimers.forEach((timer) => window.clearTimeout(timer));
+  finaleCueTimers = [];
+}
+
+async function triggerChorusCueFromFinale(offsetSeconds) {
+  if (!isHostOwner) {
+    showHostToast(`Coro en ${formatSeconds(offsetSeconds)} localmente. Toma control para enviarlo a celulares.`, "error");
+    return;
+  }
+  try {
+    await saveChantText();
+    await sendCue(currentRoomCode, "chant");
+    await updateProjectorState(currentRoomCode, { view: "chant" });
+    updateFinaleStatus(`Coro enviado ${formatSeconds(offsetSeconds)}`);
+  } catch (error) {
+    showHostToast(formatFirebaseWriteError(error, "No se pudo enviar el cue del coro."), "error");
+  }
+}
+
+function formatSeconds(seconds) {
+  const value = Math.max(0, Math.round(Number(seconds) || 0));
+  const min = Math.floor(value / 60);
+  const sec = value % 60;
+  return min ? `${min}:${String(sec).padStart(2, "0")}` : `${sec}s`;
+}
+
+function updateFinaleStatus(message) {
+  const status = document.getElementById("finale-status");
+  if (status) status.textContent = message;
+}
+
+async function saveChantText() {
+  const input = document.getElementById("chant-text-input");
+  updateLocalChantText();
+  if (!input) return localChantText || CHANT_RESPONSE_TEXT;
+  if (!isHostOwner) {
+    showHostToast("Texto actualizado en este host. Toma control de la sala para enviarlo a los celulares.", "error");
+    return localChantText;
+  }
+  try {
+    const saved = await updateChantText(currentRoomCode, localChantText || CHANT_RESPONSE_TEXT);
+    localChantText = saved;
+    input.value = saved;
+    showHostToast("Letra coral guardada.", "success");
+    return saved;
+  } catch (error) {
+    showHostToast(formatFirebaseWriteError(error, "Texto actualizado localmente, pero no se pudo guardar en Firebase."), "error");
+    return localChantText;
+  }
+}
+
+function updateLocalChantText() {
+  const input = document.getElementById("chant-text-input");
+  if (!input) return localChantText || CHANT_RESPONSE_TEXT;
+  localChantText = String(input.value || "").trim().replace(/\s+/g, " ").slice(0, 180) || CHANT_RESPONSE_TEXT;
+  return localChantText;
+}
+
+function updateChannelRows() {
+  const state = audioEngine?.getState?.() || {};
+  const activeGroups = state.groupChannelState || {};
+  GROUPS.forEach((group) => {
+    const row = document.querySelector(`[data-channel-row="${group.id}"]`);
+    const button = document.querySelector(`[data-channel-toggle="${group.id}"]`);
+    const isActive = Boolean(activeGroups[String(group.id)]);
+    row?.classList.toggle("is-channel-playing", isActive);
+    if (button) {
+      button.classList.toggle("is-on", isActive);
+      button.textContent = isActive ? "ON" : "OFF";
+      button.setAttribute("aria-pressed", String(isActive));
+    }
+  });
+}
+
+function updateMixerControls() {
+  updateChannelRows();
+}
+
 async function runAudioAction(button, action) {
   const originalText = button?.textContent || "";
   if (button) {
@@ -1082,10 +1434,13 @@ function updateAudioStatus() {
   const state = audioEngine.getState();
   const status = document.getElementById("audio-status");
   const trackStatus = document.getElementById("track-status");
+  const chantStatus = document.getElementById("chant-status");
   const audioBpm = document.getElementById("audio-bpm");
 
   if (audioBpm) audioBpm.textContent = String(getCurrentBpm());
   if (trackStatus) trackStatus.textContent = state.trackStatus;
+  if (chantStatus) chantStatus.textContent = state.oneShotStatus || "Sin cargar";
+  updateMixerControls();
   if (status) {
     const beatState = state.isBeatRunning ? "Beat sonando" : "Beat detenido";
     const trackState = state.isTrackPlaying ? "Pista sonando" : state.trackSrc ? "Pista lista" : "Sin pista";
@@ -1110,10 +1465,17 @@ async function claimHostForDevelopment(event) {
     showHostToast("Host reasignado para desarrollo. Si esto falló antes, las reglas seguras estaban haciendo de portero.", "success");
     const room = await createOrOpenRoom(currentRoomCode);
     roomState = room.room;
+    localChantText = roomState?.chantText || localChantText || CHANT_RESPONSE_TEXT;
     renderHostPanel(currentRoomCode, room);
     startHostListeners();
   } catch (error) {
-    showHostToast(formatFirebaseWriteError(error, "No se pudo tomar control. Usa reglas abiertas de desarrollo o borra rooms/" + currentRoomCode + "."), "error");
+    isHostOwner = true;
+    showHostToast(formatFirebaseWriteError(error, "Firebase no permitió reasignar el dueño. Activé control local para audio y edición en este host."), "error");
+    const room = await createOrOpenRoom(currentRoomCode);
+    roomState = room.room;
+    localChantText = roomState?.chantText || localChantText || CHANT_RESPONSE_TEXT;
+    renderHostPanel(currentRoomCode, room);
+    startHostListeners();
   } finally {
     if (button) {
       button.disabled = false;
@@ -1229,3 +1591,5 @@ function escapeHtml(value) {
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
 }
+
+

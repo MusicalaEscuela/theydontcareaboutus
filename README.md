@@ -1,5 +1,86 @@
 # Musicala · Sala rítmica en vivo
 
+## Uso en restaurante
+
+La dinámica está pensada para un host con el panel abierto y el público entrando desde celular. El host crea o abre una sala, comparte el código o QR, activa el pulso público, decide el BPM y lanza las entradas de cada grupo. Los celulares de participantes son principalmente visuales; el audio del evento debe salir desde el computador o dispositivo del host conectado al sonido del restaurante.
+
+Explicación breve para el público:
+
+"Cuenta siempre 1, 2, 3, 4. Mira tu grupo. Cuando tu pantalla se ponga de color, haces tu ritmo. Cuando esté clara, espera tu turno y sigue contando por dentro. Si aparece Todos ahora, todos participan. Si aparece Frase coral, canta la letra que ves en pantalla."
+
+## Grupos existentes
+
+Los nombres principales de grupo se mantienen:
+
+- Pies: marca el pulso con los pies en cada tiempo: 1, 2, 3, 4. Suave y constante.
+- Palmas: aplaude solo en 2 y 4. Espera el 1, aplaude en 2, espera el 3, aplaude en 4.
+- Piernas: golpea suavemente tus piernas en 1 y 3. No corras, sostienes la base.
+- Mesa / vaso: haz golpes cortos y suaves sobre la mesa o el vaso. La idea es sonar rítmico, no fuerte.
+
+El host puede usar estos grupos por zonas o lugares del restaurante, por ejemplo mesa central, barra, terraza o salón. La app mantiene los nombres musicales de los grupos y permite dirigirlos visualmente por entrada.
+
+## Frase coral
+
+El cue especial `chant` muestra a todos los participantes una pantalla de respuesta coral con el título "TODOS RESPONDEN", una instrucción breve y la letra visible. La letra por defecto vive centralizada en `CHANT_RESPONSE_TEXT` dentro de `rhythms.js`.
+
+Desde el panel host, en "Audio del evento" > "Frase coral", puedes editar la letra que verá el público. Ese texto se guarda en Firebase en:
+
+`rooms/{roomCode}/chantText`
+
+Si no hay texto guardado, los participantes usan `CHANT_RESPONSE_TEXT` como fallback.
+
+Para que el botón "🎤 Frase coral" reproduzca audio, coloca una grabación propia en:
+
+`assets/audio/chant-phrase.mp3`
+
+Renombra el archivo vocal exactamente como `chant-phrase.mp3`. Se recomienda usar una grabación propia de la frase coral para evitar problemas de derechos y para que el público escuche una guía clara adaptada al evento.
+
+## Mixer de grupos
+
+La reproducción por grupos vive dentro de "Caja de ritmos en vivo", en la misma fila donde se edita el patrón de 16 pasos. Cada fila funciona como canal local del host:
+
+- OFF/ON al lado del nombre: activa o apaga ese grupo.
+- Si activas Pies y luego Palmas, Palmas entra encima sin apagar Pies.
+- Si vuelves a tocar Pies, Pies se apaga y Palmas sigue sonando.
+- Los cuadritos del patrón siguen siendo editables mientras el canal suena.
+- Cambiar BPM mantiene los canales sincronizados con el BPM maestro.
+
+Estos controles solo afectan el audio local del host. No escriben en Firebase y no modifican ni borran los patrones guardados.
+
+Controles generales de esa sección:
+
+- Reproducir por grupos: activa la reproducción usando las filas de la caja de ritmos. Si no hay grupos activos, activa todos.
+- Pausar grupos: pausa el reloj de reproducción por grupos, conservando qué canales estaban activos.
+- Detener grupos: apaga todos los canales de grupo.
+- Detener todo: detiene canales de grupo, beat, pista completa y frase coral.
+
+Separación importante:
+
+- Reproducción por grupos: usa los patrones editables de la caja de ritmos.
+- Pista completa: reproduce un archivo de audio cargado en "Audio del evento".
+
+## Archivos de audio
+
+La pista opcional del evento puede cargarse como antes. La frase coral usa un one-shot independiente para sonar encima del beat sin detenerlo. El archivo esperado es:
+
+`assets/audio/chant-phrase.mp3`
+
+El archivo vocal de la frase coral debe ponerse dentro de `assets/audio/` y debe llamarse exactamente `chant-phrase.mp3`. Evita espacios, tildes y nombres largos en archivos de audio para reducir errores de carga en navegadores y servidores estáticos.
+
+Para el gran final, la voz completa debe ponerse en:
+
+`assets/audio/final-vocals.mp3`
+
+El botón "Gran final" arranca esa voz en el tiempo 1. El campo "Entrada del coro (segundos)" permite programar cuándo se envía la señal coral al público; ajusta ese número después de escuchar dónde entra exactamente el coro en tu archivo.
+
+La pantalla de restaurante se abre con:
+
+```txt
+index.html?admin=1&room=MJ30
+```
+
+Desde el host, en "Pantalla restaurante", puedes mostrar los 4 grupos, un grupo específico o la letra coral al centro. Cuando se lanza la frase coral, la letra se ilumina estilo karaoke durante 3 segundos.
+
 Aplicación web mobile-first para crear una sala rítmica sincronizada en eventos en vivo.
 
 Evento base:
@@ -40,7 +121,6 @@ Grupos:
 2. 👏 Palmas
 3. 🦵 Piernas
 4. 🥁 Mesa / vaso
-5. 🎤 Voz / grito
 
 ### 2. Host / director
 
@@ -66,7 +146,6 @@ El host puede:
   - Entra Grupo 2
   - Entra Grupo 3
   - Entra Grupo 4
-  - Entra Grupo 5
   - Todos juntos
   - Bajar energía
   - Silencio
@@ -316,7 +395,7 @@ Esta versión permite:
         "participants": {
           "$uid": {
             ".write": "auth != null && auth.uid === $uid",
-            ".validate": "newData.hasChildren(['uid', 'name', 'group', 'joinedAtClient', 'lastSeenClient']) && newData.child('uid').val() === auth.uid && newData.child('name').isString() && newData.child('name').val().length <= 32 && newData.child('group').isNumber() && newData.child('group').val() >= 1 && newData.child('group').val() <= 5"
+            ".validate": "newData.hasChildren(['uid', 'name', 'group', 'joinedAtClient', 'lastSeenClient']) && newData.child('uid').val() === auth.uid && newData.child('name').isString() && newData.child('name').val().length <= 32 && newData.child('group').isNumber() && newData.child('group').val() >= 1 && newData.child('group').val() <= 4"
           }
         }
       }
@@ -466,9 +545,8 @@ Cuando GitHub Pages entregue la URL pública, usa estas variantes al final:
 3. Entra Grupo 2
 4. Entra Grupo 3
 5. Entra Grupo 4
-6. Entra Grupo 5
-7. Todos juntos
-8. Silencio
+6. Todos juntos
+7. Frase coral`r`n8. Silencio
 9. Corte final
 10. Pose MJ
 
@@ -480,7 +558,6 @@ Patrones principales:
 | 2 · Palmas | Aplaude | 2 y 4 |
 | 3 · Piernas | Golpea suave | 1 y 3 |
 | 4 · Mesa / vaso | Golpes cortos | 1 · y · 3 · y |
-| 5 · Voz | Grita | ¡Hey! en el 4 |
 
 ---
 
@@ -546,7 +623,7 @@ Revisa que el host sea el dueño de la sala. Con reglas seguras, solo el navegad
 
 Esta versión agrega una **Caja de ritmos en vivo** al panel host, inspirada en el secuenciador Musicala.
 
-El host puede editar una matriz de **5 filas x 16 pasos**:
+El host puede editar una matriz de **4 filas x 16 pasos**:
 
 ```txt
               1 e & a | 2 e & a | 3 e & a | 4 e & a
@@ -554,7 +631,6 @@ Pies          □ □ □ □ | □ □ □ □ | □ □ □ □ | □ □ □ 
 Palmas        □ □ □ □ | □ □ □ □ | □ □ □ □ | □ □ □ □
 Piernas       □ □ □ □ | □ □ □ □ | □ □ □ □ | □ □ □ □
 Mesa / vaso   □ □ □ □ | □ □ □ □ | □ □ □ □ | □ □ □ □
-Voz / grito   □ □ □ □ | □ □ □ □ | □ □ □ □ | □ □ □ □
 ```
 
 Cada celda puede activarse o desactivarse desde el host. Un mismo paso puede tener varios grupos al tiempo, por ejemplo:
@@ -563,7 +639,7 @@ Cada celda puede activarse o desactivarse desde el host. Un mismo paso puede ten
 Paso 1: Pies + Mesa
 Paso 5: Palmas
 Paso 9: Piernas
-Paso 13: Voz
+Paso 13: Palmas
 ```
 
 La fuente de verdad está en Firebase:
@@ -624,7 +700,6 @@ Grupo 1 / Pies        → Kick / stomp
 Grupo 2 / Palmas      → Snare / clap
 Grupo 3 / Piernas     → Golpe corporal / mesa
 Grupo 4 / Mesa / vaso → Click / platillo suave
-Grupo 5 / Voz         → Acento sintético
 ```
 
 El audio sigue sonando **solo en el dispositivo del host**.
@@ -956,4 +1031,7 @@ Tomar control en desarrollo
 ```
 
 Ese botón solo funciona con reglas abiertas de desarrollo. Con reglas seguras, Firebase no permite cambiar el `hostUid`, porque aparentemente hasta una caja de ritmos necesita seguridad de aeropuerto.
+
+
+
 

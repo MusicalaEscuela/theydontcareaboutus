@@ -15,9 +15,9 @@ export const GROUPS = [
     action: "Marca el pulso con los pies",
     pattern: "1 · 2 · 3 · 4",
     patternShort: "Todos los tiempos",
-    patternDetail: "Golpea el piso en cada tiempo: uno, dos, tres y cuatro. Constante, como una marcha de estadio.",
+    patternDetail: "Marca el pulso con los pies en cada tiempo: 1, 2, 3, 4. Suave y constante.",
     steps16: [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0],
-    help: "Tu misión es sostener el piso del ritmo. No corras, no adornes, solo mantén el pulso firme. Heroico y simple, como casi todo lo que funciona."
+    help: "Marca el pulso con los pies en cada tiempo: 1, 2, 3, 4. Suave y constante."
   },
   {
     id: 2,
@@ -29,9 +29,9 @@ export const GROUPS = [
     action: "Aplaude en el 2 y el 4",
     pattern: "2 · 4",
     patternShort: "Backbeat",
-    patternDetail: "Aplaude únicamente en el tiempo dos y en el tiempo cuatro. Fuerte, corto y con actitud.",
+    patternDetail: "Aplaude solo en 2 y 4. Espera el 1, aplaude en 2, espera el 3, aplaude en 4.",
     steps16: [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
-    help: "Tu aplauso es el golpe que hace que todo suene más grande. Si dudas, escucha a los pies y entra en dos y cuatro."
+    help: "Aplaude solo en 2 y 4. Espera el 1, aplaude en 2, espera el 3, aplaude en 4."
   },
   {
     id: 3,
@@ -43,9 +43,9 @@ export const GROUPS = [
     action: "Golpea suave las piernas",
     pattern: "1 · 3",
     patternShort: "Base grave",
-    patternDetail: "Palmea tus piernas en el tiempo uno y en el tiempo tres. Suave, seco y parejo.",
+    patternDetail: "Golpea suavemente tus piernas en 1 y 3. No corras, tú sostienes la base.",
     steps16: [1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
-    help: "Eres la capa grave de la percusión corporal. Menos show, más estabilidad. Qué raro: algo discreto sosteniendo todo."
+    help: "Golpea suavemente tus piernas en 1 y 3. No corras, tú sostienes la base."
   },
   {
     id: 4,
@@ -57,25 +57,13 @@ export const GROUPS = [
     action: "Golpes cortos sobre mesa o vaso",
     pattern: "1 · y · 3 · y",
     patternShort: "Golpes cortos",
-    patternDetail: "Haz golpes secos en uno, en la y después del uno, en tres y en la y después del tres.",
+    patternDetail: "Haz golpes cortos y suaves sobre la mesa o el vaso. La idea es sonar rítmico, no fuerte.",
     steps16: [1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0],
-    help: "Usa dedos o nudillos suaves. La idea es sonar rítmico, no demandar al restaurante por daños emocionales al mobiliario."
-  },
-  {
-    id: 5,
-    key: "voice",
-    name: "Voz / grito",
-    emoji: "🎤",
-    color: "#16a34a",
-    softColor: "#dcfce7",
-    action: "Grita ¡Hey! en el 4",
-    pattern: "4 · ¡Hey!",
-    patternShort: "Grito en el cuatro",
-    patternDetail: "Espera hasta el tiempo cuatro y lanza un ¡Hey! corto, claro y con energía de estadio.",
-    steps16: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
-    help: "No grites todo el tiempo. Tu poder está en esperar. Terrible lección para la humanidad, pero funciona."
+    help: "Haz golpes cortos y suaves sobre la mesa o el vaso. La idea es sonar rítmico, no fuerte."
   }
 ];
+
+export const CHANT_RESPONSE_TEXT = "All I wanna say is that they dont really care about us";
 
 function makePattern(group, overrides = {}) {
   return {
@@ -112,8 +100,7 @@ export const PATTERN_PRESETS = {
       1: [0, 4, 8, 12],
       2: [4, 12],
       3: [0, 8],
-      4: [0, 8],
-      5: [12]
+      4: [0, 8]
     })
   },
   dense_stadium: {
@@ -124,12 +111,10 @@ export const PATTERN_PRESETS = {
       1: [0, 4, 8, 12],
       2: [4, 12],
       3: [2, 3, 6, 7, 10, 11, 14, 15],
-      4: [0, 2, 4, 6, 8, 10, 12, 14],
-      5: [12, 15]
+      4: [0, 2, 4, 6, 8, 10, 12, 14]
     }, {
       3: { patternText: "e-a · e-a · e-a · e-a", helper: "Ghost corporal" },
-      4: { patternText: "1 & 2 & 3 & 4 &", helper: "Mesa constante" },
-      5: { patternText: "4 · a", helper: "Respuesta vocal" }
+      4: { patternText: "1 & 2 & 3 & 4 &", helper: "Mesa constante" }
     })
   },
   empty: {
@@ -140,14 +125,12 @@ export const PATTERN_PRESETS = {
       1: [],
       2: [],
       3: [],
-      4: [],
-      5: []
+      4: []
     }, {
       1: { patternText: "—", helper: "Sin golpes" },
       2: { patternText: "—", helper: "Sin golpes" },
       3: { patternText: "—", helper: "Sin golpes" },
-      4: { patternText: "—", helper: "Sin golpes" },
-      5: { patternText: "—", helper: "Sin golpes" }
+      4: { patternText: "—", helper: "Sin golpes" }
     })
   }
 };
@@ -338,17 +321,6 @@ export const CUES = {
     participantStatus: "entra",
     tone: "group"
   },
-  group5: {
-    key: "group5",
-    type: "group",
-    activeGroup: 5,
-    label: "Entra Grupo 5",
-    icon: "🎤",
-    message: "Entra la voz",
-    subMessage: "Grupo 5 grita ¡Hey! en el 4",
-    participantStatus: "entra",
-    tone: "group"
-  },
   all: {
     key: "all",
     type: "all",
@@ -359,6 +331,17 @@ export const CUES = {
     subMessage: "Sigue tu patrón · Todos juntos",
     participantStatus: "todos",
     tone: "success"
+  },
+  chant: {
+    key: "chant",
+    type: "chant",
+    activeGroup: null,
+    label: "Frase coral",
+    icon: "🎤",
+    message: "Frase coral",
+    subMessage: "Todos responden cantando",
+    participantStatus: "canta la frase",
+    tone: "chant"
   },
   lower: {
     key: "lower",
@@ -423,8 +406,8 @@ export const HOST_SEQUENCE = [
   "group2",
   "group3",
   "group4",
-  "group5",
   "all",
+  "chant",
   "silence",
   "cut",
   "pose"
@@ -478,3 +461,5 @@ export function getTotalFreshParticipants(participants = {}, maxAgeMs = 90000) {
     return !lastSeen || now - lastSeen <= maxAgeMs;
   }).length;
 }
+
+

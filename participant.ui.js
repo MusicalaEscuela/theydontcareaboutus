@@ -17,6 +17,7 @@ import {
 } from "./room.service.js";
 import {
   ACTIVITIES,
+  CHANT_RESPONSE_TEXT,
   GROUPS,
   DEFAULT_PATTERNS,
   getActivityById,
@@ -38,6 +39,7 @@ let connectionUnsubscribe = null;
 let serverTimeOffset = 0;
 let metronomeState = null;
 let currentPatterns = sanitizePatterns(DEFAULT_PATTERNS);
+let currentCueState = null;
 let currentStep16 = -1;
 let pulseAnimationFrame = null;
 let lastPulseBeat = null;
@@ -96,6 +98,11 @@ function renderJoinScreen(roomCode) {
 
           <button class="primary-action" type="submit">Entrar a la sala</button>
         </form>
+
+        <div class="participant-instructions">
+          <strong>Cuenta siempre: 1, 2, 3, 4.</strong>
+          <p>Cuando tu pantalla se ponga de color, haces el ritmo o movimiento de tu grupo. Cuando esté clara, espera tu turno y sigue contando por dentro. Si aparece "Todos ahora", todos participan al mismo tiempo.</p>
+        </div>
 
         <p class="microcopy">No necesitas instalar nada. Qué civilizado por una vez.</p>
       </section>
@@ -166,6 +173,7 @@ function renderParticipantRoom(roomCode, participant) {
         <div class="group-badge">
           <span>Grupo ${group.id}</span>
           <strong>${group.name}</strong>
+          <small id="group-location" hidden></small>
         </div>
 
         <div class="main-emoji" aria-hidden="true">${group.emoji}</div>
@@ -173,6 +181,16 @@ function renderParticipantRoom(roomCode, participant) {
         <div id="cue-status" class="cue-status">Espera</div>
         <h1 id="cue-message" class="cue-message">Espera tu entrada</h1>
         <p id="cue-submessage" class="cue-submessage">${group.action}</p>
+
+        <div id="chant-lyrics-card" class="chant-lyrics-card" hidden>
+          <span>Lee y canta</span>
+          <div id="chant-lyrics" class="chant-lyrics">${renderChantWords(getChantText())}</div>
+          <small>Lee la frase y cántala cuando entre la pista.</small>
+        </div>
+
+        <div id="count-guide" class="count-guide" aria-label="Conteo 1 2 3 4">
+          ${[1, 2, 3, 4].map((number) => `<span class="count-number" data-count-number="${number}">${number}</span>`).join("")}
+        </div>
 
         <div class="pattern-panel" id="pattern-panel">
           <span class="pattern-label">Tu patrón</span>
@@ -184,20 +202,48 @@ function renderParticipantRoom(roomCode, participant) {
         </div>
 
         <button id="help-toggle" class="secondary-action" type="button">¿Qué hago?</button>
+
+        <section id="help-panel" class="help-panel" hidden>
+          <h2>${group.emoji} Grupo ${group.id}: ${group.name}</h2>
+          <p><strong>Acción:</strong> <span id="help-action">${escapeHtml(groupPattern.action)}</span></p>
+          <p><strong>Patrón:</strong> <span id="help-detail">${escapeHtml(groupPattern.detail)}</span></p>
+          <p id="help-copy">${escapeHtml(groupPattern.help)}</p>
+        </section>
       </section>
 
-      <section id="help-panel" class="help-panel" hidden>
-        <h2>${group.emoji} Grupo ${group.id}: ${group.name}</h2>
-        <p><strong>Acción:</strong> <span id="help-action">${escapeHtml(groupPattern.action)}</span></p>
-        <p><strong>Patrón:</strong> <span id="help-detail">${escapeHtml(groupPattern.detail)}</span></p>
-        <p id="help-copy">${escapeHtml(groupPattern.help)}</p>
+      <section class="how-to-play-panel">
+        <button id="how-to-toggle" class="ghost-button small-button" type="button" aria-expanded="false">Cómo jugar</button>
+        <div id="how-to-body" hidden>
+          <h2>Cómo jugar</h2>
+          <ul>
+            <li>Mira tu grupo.</li>
+            <li>Cuenta 1, 2, 3, 4.</li>
+            <li>Cuando esté morado: haces tu ritmo.</li>
+            <li>Cuando esté claro: esperas.</li>
+            <li>Si aparece la frase coral: responde cantando la letra que aparece en pantalla.</li>
+          </ul>
+        </div>
       </section>
+
+      <section id="participant-intro-overlay" class="participant-intro-overlay" hidden aria-live="polite"></section>
+
     </main>
   `;
 
-  document.getElementById("help-toggle").addEventListener("click", () => {
+  document.getElementById("help-toggle")?.addEventListener("click", (event) => {
     const panel = document.getElementById("help-panel");
+    if (!panel) return;
     panel.hidden = !panel.hidden;
+    event.currentTarget.textContent = panel.hidden ? "¿Qué hago?" : "Ocultar ayuda";
+    if (!panel.hidden) {
+      panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  });
+
+  document.getElementById("how-to-toggle").addEventListener("click", (event) => {
+    const panel = document.getElementById("how-to-body");
+    panel.hidden = !panel.hidden;
+    event.currentTarget.setAttribute("aria-expanded", String(!panel.hidden));
   });
 
   document.getElementById("leave-room-btn").addEventListener("click", async () => {
@@ -330,12 +376,21 @@ function updateParticipantStepCursor(stepIndex) {
 function updateRoomMeta(room) {
   const activityName = document.getElementById("activity-name");
   const roomTitle = document.getElementById("participant-room-title");
+  const chantLyrics = document.getElementById("chant-lyrics");
+  const groupLocation = document.getElementById("group-location");
   if (!room) return;
 
   const activity = getActivityById(room.activity);
   const modeLabel = room.mode === "show" ? "Show" : "Ensayo";
   if (roomTitle) roomTitle.textContent = room.title || "Sala rítmica Musicala";
   if (activityName) activityName.textContent = `${activity.shortName} · ${room.bpm || activity.defaultBpm} BPM · ${modeLabel}`;
+  if (chantLyrics) chantLyrics.innerHTML = renderChantWords(getChantText(room), getCurrentBeatNumber());
+  if (groupLocation && currentParticipant) {
+    const location = room.groupLocations?.[String(currentParticipant.group)] || "";
+    groupLocation.textContent = location ? `Lugar: ${location}` : "";
+    groupLocation.hidden = !location;
+  }
+  updateParticipantIntroOverlay(room);
 }
 
 
@@ -371,6 +426,7 @@ function updatePulseVisual() {
     meta.textContent = "Pulso en espera";
     currentStep16 = -1;
     updateParticipantStepCursor(-1);
+    updateCountGuide(-1);
     lastPulseBeat = null;
     lastPulseActive = false;
     pulseAnimationFrame = requestAnimationFrame(updatePulseVisual);
@@ -386,6 +442,8 @@ function updatePulseVisual() {
   const stepDurationMs = beatDurationMs / 4;
   currentStep16 = Math.floor(elapsed / stepDurationMs) % 16;
   updateParticipantStepCursor(currentStep16);
+  updateCountGuide(currentBeat);
+  updateChantKaraoke();
   const isActive = phase < 0.18;
   const isAccent = isActive && currentBeat === 1;
 
@@ -409,6 +467,7 @@ function updatePulseVisual() {
 
 function updateParticipantCue(cue) {
   if (!currentParticipant) return;
+  currentCueState = cue;
 
   const group = getGroupById(currentParticipant.group);
   const groupPattern = getGroupPattern(currentPatterns, currentParticipant.group);
@@ -416,6 +475,8 @@ function updateParticipantCue(cue) {
   const status = document.getElementById("cue-status");
   const message = document.getElementById("cue-message");
   const submessage = document.getElementById("cue-submessage");
+  const chantCard = document.getElementById("chant-lyrics-card");
+  const chantLyrics = document.getElementById("chant-lyrics");
 
   if (!group || !card || !status || !message || !submessage) return;
 
@@ -424,6 +485,8 @@ function updateParticipantCue(cue) {
   status.textContent = state.status;
   message.textContent = state.message;
   submessage.textContent = state.subMessage;
+  if (chantCard) chantCard.hidden = !state.isChant;
+  if (chantLyrics) chantLyrics.innerHTML = renderChantWords(getChantText(), state.isChant ? getChantProgress(cue) : -1);
 
   const signature = `${cue.type}:${cue.activeGroup ?? "none"}:${cue.updatedAtClient || cue.updatedAt || "x"}:${state.isMyTurn}`;
   if (state.shouldVibrate && signature !== lastCueSignature) {
@@ -440,9 +503,9 @@ function getVisualStateForCue(cue, group, groupPattern = null) {
     const isMyTurn = activeGroup === group.id;
     return isMyTurn
       ? {
-        cardClass: "is-active is-group-turn",
-        status: "Entra",
-        message: "¡Ahora tu grupo!",
+        cardClass: "is-active is-active-purple is-group-turn",
+        status: "AHORA TÚ",
+        message: "AHORA TÚ",
         subMessage: groupPattern?.action || group.action,
         isMyTurn: true,
         shouldVibrate: true,
@@ -450,9 +513,9 @@ function getVisualStateForCue(cue, group, groupPattern = null) {
       }
       : {
         cardClass: "is-waiting",
-        status: "Espera",
+        status: "Espera tu entrada",
         message: "Espera tu entrada",
-        subMessage: `Está activo el Grupo ${activeGroup}`,
+        subMessage: "Sigue contando 1, 2, 3, 4",
         isMyTurn: false,
         shouldVibrate: false
       };
@@ -461,12 +524,25 @@ function getVisualStateForCue(cue, group, groupPattern = null) {
   if (cueType === "all") {
     return {
       cardClass: "is-active is-all",
-      status: "Todos",
-      message: "Todos juntos",
+      status: "TODOS AHORA",
+      message: "TODOS AHORA",
       subMessage: "Sigue tu patrón · Todos juntos",
       isMyTurn: true,
       shouldVibrate: true,
       vibrationPattern: [70, 35, 70, 35, 120]
+    };
+  }
+
+  if (cueType === "chant") {
+    return {
+      cardClass: "is-active is-chant",
+      status: "Frase coral",
+      message: "TODOS RESPONDEN",
+      subMessage: "Lee la frase y cántala cuando entre la pista",
+      isMyTurn: true,
+      isChant: true,
+      shouldVibrate: true,
+      vibrationPattern: [80, 40, 80, 40, 160]
     };
   }
 
@@ -552,6 +628,152 @@ function vibrate(pattern) {
   if ("vibrate" in navigator) {
     navigator.vibrate(pattern);
   }
+}
+
+function updateCountGuide(currentBeat) {
+  document.querySelectorAll(".count-number").forEach((item) => {
+    item.classList.toggle("is-current", Number(item.dataset.countNumber) === Number(currentBeat));
+  });
+}
+
+function getCurrentBeatNumber() {
+  const current = document.querySelector(".count-number.is-current");
+  return current ? Number(current.dataset.countNumber) : -1;
+}
+
+function updateChantKaraoke() {
+  const card = document.getElementById("chant-lyrics-card");
+  const lyrics = document.getElementById("chant-lyrics");
+  if (!card || card.hidden || !lyrics || currentCueState?.type !== "chant") return;
+  lyrics.innerHTML = renderChantWords(getChantText(), getChantProgress(currentCueState));
+}
+
+function getChantProgress(cue = currentCueState) {
+  const startedAt = Number(cue?.updatedAtClient || Date.now());
+  const elapsed = Math.max(0, Date.now() - startedAt);
+  return Math.min(1, elapsed / 3000);
+}
+
+function getChantText(room = currentRoom) {
+  return String(room?.chantText || CHANT_RESPONSE_TEXT);
+}
+
+function renderChantWords(text, progress = -1) {
+  const words = String(text || CHANT_RESPONSE_TEXT).split(/\s+/).filter(Boolean);
+  const litCount = progress >= 0 ? Math.ceil(Math.min(1, progress) * words.length) : 0;
+  return words.map((word, index) => `<span class="${index < litCount ? "is-lit" : ""}">${escapeHtml(word)}</span>`).join(" ");
+}
+
+function updateParticipantIntroOverlay(room = currentRoom) {
+  const overlay = document.getElementById("participant-intro-overlay");
+  if (!overlay) return;
+
+  const projector = room?.projector || {};
+  if (projector.view !== "intro") {
+    overlay.hidden = true;
+    overlay.innerHTML = "";
+    return;
+  }
+
+  const slides = getParticipantIntroSlides();
+  const slideIndex = Math.max(0, Math.min(slides.length - 1, Number(projector.introSlide || 0)));
+  const slide = slides[slideIndex] || slides[0];
+  overlay.hidden = false;
+  overlay.innerHTML = `
+    <div class="participant-intro-stage ${slide.bg}">
+      <div class="participant-intro-progress" style="width:${(slideIndex / (slides.length - 1)) * 100}%"></div>
+      <span class="participant-intro-count">${String(slideIndex + 1).padStart(2, "0")} / ${String(slides.length).padStart(2, "0")}</span>
+      <span class="participant-intro-brand">MUSICALA</span>
+      <div class="participant-intro-content">
+        <p>${slide.label}</p>
+        <h1>${slide.title}</h1>
+        <div>${slide.body}</div>
+      </div>
+    </div>
+  `;
+}
+
+function getParticipantIntroSlides() {
+  return [
+    {
+      bg: "bg-radial",
+      label: "Musicala · Especial",
+      title: "EL RESTAURANTE<br><em>TAMBIÉN</em><br><span>SUENA</span>",
+      body: "Especial Michael Jackson · They Don't Care About Us"
+    },
+    {
+      bg: "bg-radial",
+      label: "Atención, público querido",
+      title: "Atención,<br>público querido",
+      body: "En unos minutos este restaurante dejará de ser solo un restaurante."
+    },
+    {
+      bg: "bg-red",
+      label: "La canción de hoy",
+      title: "They Don't Care<br>About Us",
+      body: "Una canción intensa, directa, con energía de protesta y fuerza colectiva."
+    },
+    {
+      bg: "bg-radial",
+      label: "Michael Jackson",
+      title: "Más grande<br>que una tarima",
+      body: "Michael construía imágenes, coreografías y momentos más grandes que cualquier escenario."
+    },
+    {
+      bg: "bg-split",
+      label: "Spike Lee · Brasil",
+      title: "El video<br>que se quedó",
+      body: "Calles, comunidad, percusión, cuerpos en movimiento y pulso colectivo."
+    },
+    {
+      bg: "bg-musicala",
+      label: "El ritmo empieza aquí",
+      title: "En el cuerpo",
+      body: "Palmas, pies, piernas, mesa y vaso. Todos tienen una parte."
+    },
+    {
+      bg: "bg-red",
+      label: "Verdad liberadora",
+      title: "No hay que ser<br>músico profesional",
+      body: "Hay que escuchar, contar y entrar a tiempo."
+    },
+    {
+      bg: "bg-radial",
+      label: "La magia del ensamble",
+      title: "Sencillo<br>en el momento correcto",
+      body: "Cuando todo se junta, eso ya no es ruido: es ensamble."
+    },
+    {
+      bg: "bg-musicala",
+      label: "Tu misión de hoy",
+      title: "Cada grupo<br>tiene una parte",
+      body: "Pies, palmas, piernas y mesa / vaso entran poco a poco."
+    },
+    {
+      bg: "bg-red",
+      label: "La regla es simple",
+      title: "Cuenta siempre<br>1 · 2 · 3 · 4",
+      body: "Pantalla normal: espera. Pantalla morada: haz tu ritmo."
+    },
+    {
+      bg: "bg-radial",
+      label: "Frase coral",
+      title: "Lee. Escucha.<br>Responde.",
+      body: "No tiene que sonar perfecto. Tiene que sonar vivo."
+    },
+    {
+      bg: "bg-musicala",
+      label: "Prepárate",
+      title: "Escanea · Elige · Entra",
+      body: "Mira tu pantalla. Cuenta, espera y entra."
+    },
+    {
+      bg: "bg-radial",
+      label: "Porque hoy",
+      title: "El escenario<br>es todo el restaurante",
+      body: "Salvémoslos del Reggaetón 2026 · Especial Michael Jackson"
+    }
+  ];
 }
 
 function setButtonLoading(button, text) {
