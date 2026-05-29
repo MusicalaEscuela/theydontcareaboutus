@@ -6,6 +6,7 @@
 import { ensureAuth } from "./firebase-config.js";
 import { initHost } from "./host.ui.js";
 import { initParticipant } from "./participant.ui.js";
+import { initProjector } from "./projector.ui.js";
 import { normalizeRoomCode } from "./room.service.js";
 
 window.addEventListener("DOMContentLoaded", bootstrapApp);
@@ -15,10 +16,16 @@ async function bootstrapApp() {
   const params = new URLSearchParams(window.location.search);
   const roomCode = normalizeRoomCode(params.get("room") || "MJ30");
   const isHost = params.get("host") === "1" || params.has("host");
+  const isProjector = params.get("admin") === "1" || params.has("admin");
   const isParticipantDirect = params.has("room") && !isHost;
 
   try {
     await ensureAuth();
+
+    if (isProjector) {
+      initProjector(roomCode);
+      return;
+    }
 
     if (isHost) {
       await initHost(roomCode);

@@ -122,6 +122,17 @@ export class AudioEngine {
     this.trackSrc = "";
     this.trackBaseBpm = 96;
     this.trackFollowsBpm = true;
+    this.oneShots = new Map();
+    this.oneShotGain = 0.85;
+    this.oneShotStatus = "sin cargar";
+    this.isGroupSchedulerRunning = false;
+    this.activeGroupChannels = new Set();
+    this.channelState = {
+      "1": { muted: false, solo: false, volume: 1 },
+      "2": { muted: false, solo: false, volume: 1 },
+      "3": { muted: false, solo: false, volume: 1 },
+      "4": { muted: false, solo: false, volume: 1 }
+    };
   }
 
   async init() {
@@ -169,23 +180,22 @@ export class AudioEngine {
     await this.unlock();
     if (this.isBeatRunning) return true;
     this.isBeatRunning = true;
-    this.currentStep = 0;
-    this.nextStepTime = this.context.currentTime + 0.045;
-    this.scheduler();
-    this.timerId = window.setInterval(() => this.scheduler(), this.lookaheadMs);
+    this.ensureScheduler(false);
     return true;
   }
 
   pauseBeat() {
-    this.clearScheduler();
     this.isBeatRunning = false;
+    this.stopSchedulerIfIdle();
   }
 
   stopBeat() {
-    this.clearScheduler();
     this.isBeatRunning = false;
-    this.currentStep = 0;
-    if (typeof this.onStep === "function") this.onStep(-1);
+    this.stopSchedulerIfIdle();
+    if (!this.isGroupSchedulerRunning) {
+      this.currentStep = 0;
+      if (typeof this.onStep === "function") this.onStep(-1);
+    }
   }
 
   setBpm(bpm) {
@@ -318,6 +328,160 @@ export class AudioEngine {
     return normalized;
   }
 
+  async loadOneShot(id, src) {
+    await this.unlock();
+    const cleanId = String(id || "").trim();
+    const cleanSrc = String(src || "").trim();
+    if (!cleanId) throw new Error("Falta id para el one-shot.");
+    if (!DIRECT_AUDIO_RE.test(cleanSrc)) throw new Error("Usa un archivo .mp3, .wav, .ogg o .m4a para la frase.");
+    const buffer = await loadFirstAvailableAudioBuffer(this.context, [cleanSrc]);
+    this.oneShots.set(cleanId, { buffer, source: null, status: "cargada", src: cleanSrc });
+    this.oneShotStatus = "cargada";
+    return true;
+  }
+
+  playOneShot(id, options = {}) {
+    const shot = this.oneShots.get(String(id));
+    if (!shot?.buffer) throw new Error("Primero carga la frase coral.");
+    if (!this.context || !this.master) throw new Error("Audio no activado.");
+    this.stopOneShot(id);
+    const source = this.context.createBufferSource();
+    const gain = this.context.createGain();
+    const volume = normalizeVolume(options.volume ?? this.oneShotGain);
+    const when = options.alignToBeat === false
+      ? this.context.currentTime + 0.01
+      : this.getAlignedOneShotTime(options.alignTo || "strong");
+    source.buffer = shot.buffer;
+    gain.gain.setValueAtTime(volume, when);
+    source.connect(gain).connect(this.master);
+    source.addEventListener("ended", () => {
+      if (shot.source === source) {
+        shot.source = null;
+        shot.status = "cargada";
+        this.oneShotStatus = "cargada";
+      }
+    });
+    shot.source = source;
+    shot.status = "sonando";
+    this.oneShotGain = volume;
+    this.oneShotStatus = "sonando";
+    source.start(when);
+    return {
+      id: String(id),
+      when,
+      delayMs: Math.max(0, (when - this.context.currentTime) * 1000)
+    };
+  }
+
+  stopOneShot(id) {
+    const shot = this.oneShots.get(String(id));
+    if (!shot?.source) return false;
+    try { shot.source.stop(); } catch (_) {}
+    shot.source = null;
+    shot.status = "cargada";
+    this.oneShotStatus = "cargada";
+    return true;
+  }
+
+  setOneShotVolume(value) {
+    this.oneShotGain = normalizeVolume(value);
+    return this.oneShotGain;
+  }
+
+  setChannelMute(groupId, value) {
+    this.ensureChannel(groupId).muted = Boolean(value);
+    return this.getChannelState();
+  }
+
+  setChannelSolo(groupId, value) {
+    this.ensureChannel(groupId).solo = Boolean(value);
+    return this.getChannelState();
+  }
+
+  setChannelVolume(groupId, value) {
+    this.ensureChannel(groupId).volume = normalizeVolume(value);
+    return this.getChannelState();
+  }
+
+  getChannelState() {
+    return JSON.parse(JSON.stringify(this.channelState));
+  }
+
+  auditionGroup(groupId, bars = 1) {
+    if (!this.context) return false;
+    const pattern = this.livePatterns?.[String(groupId)];
+    const instrument = getGroupInstrument(groupId);
+    if (!pattern || !instrument) return false;
+    const stepDuration = (60 / this.bpm) / 4;
+    const start = this.context.currentTime + 0.035;
+    const totalSteps = Math.max(16, Math.round(Number(bars) || 1) * 16);
+    for (let index = 0; index < totalSteps; index += 1) {
+      if (pattern[index % 16]) this.playInstrument(instrument, start + index * stepDuration, this.ensureChannel(groupId).volume);
+    }
+    return true;
+  }
+
+  async toggleGroupChannel(groupId) {
+    await this.unlock();
+    const key = String(Number(groupId));
+    if (this.activeGroupChannels.has(key)) {
+      this.stopGroupChannel(key);
+      return false;
+    }
+    this.startGroupChannel(key);
+    return true;
+  }
+
+  async startGroupChannel(groupId) {
+    await this.unlock();
+    const key = String(Number(groupId));
+    if (!getGroupInstrument(key)) return false;
+    this.activeGroupChannels.add(key);
+    this.isGroupSchedulerRunning = true;
+    this.ensureScheduler(false);
+    return true;
+  }
+
+  stopGroupChannel(groupId) {
+    const key = String(Number(groupId));
+    this.activeGroupChannels.delete(key);
+    if (this.activeGroupChannels.size === 0) {
+      this.isGroupSchedulerRunning = false;
+      this.stopSchedulerIfIdle();
+    }
+    return true;
+  }
+
+  async playGroupChannels() {
+    await this.unlock();
+    if (this.activeGroupChannels.size === 0) {
+      ["1", "2", "3", "4"].forEach((groupId) => this.activeGroupChannels.add(groupId));
+    }
+    this.isGroupSchedulerRunning = true;
+    this.ensureScheduler(false);
+    return true;
+  }
+
+  pauseGroupChannels() {
+    this.isGroupSchedulerRunning = false;
+    this.stopSchedulerIfIdle();
+    return true;
+  }
+
+  stopAllGroupChannels() {
+    this.activeGroupChannels.clear();
+    this.isGroupSchedulerRunning = false;
+    this.stopSchedulerIfIdle();
+    return true;
+  }
+
+  getGroupChannelState() {
+    return Array.from(this.activeGroupChannels).reduce((acc, key) => {
+      acc[key] = true;
+      return acc;
+    }, {});
+  }
+
   setOnStep(callback) {
     this.onStep = typeof callback === "function" ? callback : null;
   }
@@ -338,12 +502,17 @@ export class AudioEngine {
       trackVolume: this.trackGain,
       trackBaseBpm: this.trackBaseBpm,
       trackPlaybackRate: this.trackAudio?.playbackRate || 1,
+      oneShotStatus: this.oneShotStatus,
+      oneShotVolume: this.oneShotGain,
+      channelState: this.getChannelState(),
+      groupChannelState: this.getGroupChannelState(),
+      isGroupSchedulerRunning: this.isGroupSchedulerRunning,
       isTrackPlaying: Boolean(this.trackAudio?.src && !this.trackAudio.paused && !this.trackAudio.ended)
     };
   }
 
   scheduler() {
-    if (!this.context || !this.isBeatRunning) return;
+    if (!this.context || (!this.isBeatRunning && !this.isGroupSchedulerRunning)) return;
     while (this.nextStepTime < this.context.currentTime + this.scheduleAheadSec) {
       this.scheduleStep(this.currentStep, this.nextStepTime);
       this.nextStep();
@@ -351,9 +520,13 @@ export class AudioEngine {
   }
 
   scheduleStep(stepIndex, time) {
-    if (this.beatSource === "live" && this.livePatterns) {
+    if (this.isGroupSchedulerRunning) {
+      this.scheduleActiveGroupChannels(stepIndex, time);
+    }
+
+    if (this.isBeatRunning && this.beatSource === "live" && this.livePatterns) {
       this.scheduleLivePatternStep(stepIndex, time);
-    } else {
+    } else if (this.isBeatRunning) {
       const pattern = this.preset?.pattern || {};
       if (pattern.bd?.[stepIndex]) this.playInstrument("bd", time);
       if (pattern.sn?.[stepIndex]) this.playInstrument("sn", time);
@@ -367,17 +540,34 @@ export class AudioEngine {
     }
   }
 
+  scheduleActiveGroupChannels(stepIndex, time) {
+    const soloActive = Object.values(this.channelState).some((channel) => channel.solo);
+    Array.from(this.activeGroupChannels).forEach((groupId) => {
+      const instrument = getGroupInstrument(groupId);
+      const channel = this.ensureChannel(groupId);
+      if (!instrument) return;
+      if (soloActive && !channel.solo) return;
+      if (channel.muted) return;
+      if (this.livePatterns?.[groupId]?.[stepIndex]) {
+        this.playInstrument(instrument, time, channel.volume);
+      }
+    });
+  }
+
   scheduleLivePatternStep(stepIndex, time) {
     const map = {
       1: "bd",
       2: "sn",
       3: "table",
-      4: "hh",
-      5: "accent"
+      4: "hh"
     };
+    const soloActive = Object.values(this.channelState).some((channel) => channel.solo);
     Object.entries(map).forEach(([groupId, instrument]) => {
+      const channel = this.ensureChannel(groupId);
+      if (soloActive && !channel.solo) return;
+      if (channel.muted) return;
       if (this.livePatterns?.[groupId]?.[stepIndex]) {
-        this.playInstrument(instrument, time);
+        this.playInstrument(instrument, time, channel.volume);
       }
     });
   }
@@ -389,14 +579,15 @@ export class AudioEngine {
     this.currentStep = (this.currentStep + 1) % 16;
   }
 
-  playInstrument(id, time) {
+  playInstrument(id, time, channelVolume = 1) {
     const sampleId = id === "table" || id === "accent" ? "hh" : id;
     const buffer = this.samples.get(sampleId);
+    const gain = getSampleGain(id) * normalizeVolume(channelVolume);
     if (buffer) {
-      this.playBuffer(buffer, time, getSampleGain(id));
+      this.playBuffer(buffer, time, gain);
       return;
     }
-    this.playSynthetic(id, time);
+    this.playSynthetic(id, time, normalizeVolume(channelVolume));
   }
 
   playBuffer(buffer, time, gainValue = 1) {
@@ -409,55 +600,55 @@ export class AudioEngine {
     source.start(time);
   }
 
-  playSynthetic(id, time) {
-    if (id === "bd") return this.syntheticKick(time);
-    if (id === "sn") return this.syntheticSnare(time);
-    if (id === "hh") return this.syntheticHat(time);
-    if (id === "table") return this.syntheticTable(time);
-    if (id === "accent") return this.syntheticAccent(time);
+  playSynthetic(id, time, volume = 1) {
+    if (id === "bd") return this.syntheticKick(time, volume);
+    if (id === "sn") return this.syntheticSnare(time, volume);
+    if (id === "hh") return this.syntheticHat(time, volume);
+    if (id === "table") return this.syntheticTable(time, volume);
+    if (id === "accent") return this.syntheticAccent(time, volume);
   }
 
-  syntheticKick(time) {
+  syntheticKick(time, volume = 1) {
     const osc = this.context.createOscillator();
     const gain = this.context.createGain();
     osc.type = "sine";
     osc.frequency.setValueAtTime(150, time);
     osc.frequency.exponentialRampToValueAtTime(48, time + 0.13);
-    gain.gain.setValueAtTime(0.9, time);
+    gain.gain.setValueAtTime(0.9 * volume, time);
     gain.gain.exponentialRampToValueAtTime(0.001, time + 0.18);
     osc.connect(gain).connect(this.master);
     osc.start(time);
     osc.stop(time + 0.2);
   }
 
-  syntheticSnare(time) {
+  syntheticSnare(time, volume = 1) {
     const noise = this.createNoise(0.13);
     const filter = this.context.createBiquadFilter();
     const gain = this.context.createGain();
     filter.type = "bandpass";
     filter.frequency.value = 1400;
     filter.Q.value = 0.8;
-    gain.gain.setValueAtTime(0.38, time);
+    gain.gain.setValueAtTime(0.38 * volume, time);
     gain.gain.exponentialRampToValueAtTime(0.001, time + 0.12);
     noise.connect(filter).connect(gain).connect(this.master);
     noise.start(time);
     noise.stop(time + 0.13);
   }
 
-  syntheticHat(time) {
+  syntheticHat(time, volume = 1) {
     const noise = this.createNoise(0.055);
     const filter = this.context.createBiquadFilter();
     const gain = this.context.createGain();
     filter.type = "highpass";
     filter.frequency.value = 5200;
-    gain.gain.setValueAtTime(0.16, time);
+    gain.gain.setValueAtTime(0.16 * volume, time);
     gain.gain.exponentialRampToValueAtTime(0.001, time + 0.045);
     noise.connect(filter).connect(gain).connect(this.master);
     noise.start(time);
     noise.stop(time + 0.055);
   }
 
-  syntheticTable(time) {
+  syntheticTable(time, volume = 1) {
     const osc = this.context.createOscillator();
     const gain = this.context.createGain();
     const filter = this.context.createBiquadFilter();
@@ -466,16 +657,16 @@ export class AudioEngine {
     filter.type = "bandpass";
     filter.frequency.value = 820;
     filter.Q.value = 9;
-    gain.gain.setValueAtTime(0.22, time);
+    gain.gain.setValueAtTime(0.22 * volume, time);
     gain.gain.exponentialRampToValueAtTime(0.001, time + 0.07);
     osc.connect(filter).connect(gain).connect(this.master);
     osc.start(time);
     osc.stop(time + 0.075);
   }
 
-  syntheticAccent(time) {
-    this.syntheticKick(time);
-    this.syntheticSnare(time + 0.01);
+  syntheticAccent(time, volume = 1) {
+    this.syntheticKick(time, volume);
+    this.syntheticSnare(time + 0.01, volume);
   }
 
   createNoise(durationSec) {
@@ -491,6 +682,54 @@ export class AudioEngine {
   clearScheduler() {
     if (this.timerId) window.clearInterval(this.timerId);
     this.timerId = null;
+  }
+
+  ensureScheduler(restart = false) {
+    if (!this.context) return;
+    if (this.timerId && !restart) return;
+    if (this.timerId) window.clearInterval(this.timerId);
+    this.currentStep = 0;
+    this.nextStepTime = this.context.currentTime + 0.045;
+    this.scheduler();
+    this.timerId = window.setInterval(() => this.scheduler(), this.lookaheadMs);
+  }
+
+  stopSchedulerIfIdle() {
+    if (this.isBeatRunning || this.isGroupSchedulerRunning) return;
+    this.clearScheduler();
+  }
+
+  ensureChannel(groupId) {
+    const key = String(Number(groupId));
+    if (!this.channelState[key]) this.channelState[key] = { muted: false, solo: false, volume: 1 };
+    return this.channelState[key];
+  }
+
+  getAlignedOneShotTime(target = "strong") {
+    if (target === "beat1") return this.getNextBeatTime(1);
+    if (target === "beat3") return this.getNextBeatTime(3);
+    return this.getNextStrongBeatTime();
+  }
+
+  getNextBeatTime(beatNumber) {
+    const stepMap = { 1: 0, 2: 4, 3: 8, 4: 12 };
+    const targetStep = stepMap[Number(beatNumber)] ?? 0;
+    if ((!this.isBeatRunning && !this.isGroupSchedulerRunning) || !this.context) return this.context.currentTime + 0.01;
+    const stepDuration = (60 / this.bpm) / 4;
+    const current = this.currentStep % 16;
+    const stepsUntilTarget = (targetStep - current + 16) % 16;
+    return this.nextStepTime + stepsUntilTarget * stepDuration;
+  }
+
+  getNextStrongBeatTime() {
+    if ((!this.isBeatRunning && !this.isGroupSchedulerRunning) || !this.context) return this.context.currentTime + 0.01;
+    const stepDuration = (60 / this.bpm) / 4;
+    const current = this.currentStep % 16;
+    const targets = [0, 8];
+    const stepsUntilTarget = targets
+      .map((target) => (target - current + 16) % 16)
+      .sort((a, b) => a - b)[0];
+    return this.nextStepTime + stepsUntilTarget * stepDuration;
   }
 }
 
@@ -534,9 +773,18 @@ function getSampleGain(id) {
   return 0.7;
 }
 
+function getGroupInstrument(groupId) {
+  return {
+    1: "bd",
+    2: "sn",
+    3: "table",
+    4: "hh"
+  }[Number(groupId)] || null;
+}
+
 function normalizeLivePatterns(patterns) {
   const out = {};
-  [1, 2, 3, 4, 5].forEach((groupId) => {
+  [1, 2, 3, 4].forEach((groupId) => {
     const raw = patterns?.[String(groupId)]?.steps || patterns?.[groupId]?.steps || [];
     out[String(groupId)] = Array.from({ length: 16 }, (_, index) => {
       const value = raw[index];
