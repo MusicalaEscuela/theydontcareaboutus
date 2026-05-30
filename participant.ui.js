@@ -25,6 +25,7 @@ import {
   getGroupPattern,
   sanitizePatterns
 } from "./rhythms.js";
+import { escapeHtml, clampNumber, renderChantWords } from "./utils.js";
 
 let currentRoomCode = "MJ30";
 let currentParticipant = null;
@@ -41,6 +42,8 @@ let metronomeState = null;
 let currentPatterns = sanitizePatterns(DEFAULT_PATTERNS);
 let currentCueState = null;
 let currentStep16 = -1;
+let lastStep16 = -2;
+let lastBeat = -1;
 let pulseAnimationFrame = null;
 let lastPulseBeat = null;
 let lastPulseActive = false;
@@ -124,11 +127,7 @@ async function handleJoinSubmit(event) {
   setButtonLoading(submitButton, "Entrando…");
 
   try {
-    const result = await joinRoom(currentRoomCode, {
-      name,
-      group: selectedGroup
-    });
-
+    const result = await joinRoom(currentRoomCode, { name, group: selectedGroup });
     currentParticipant = result.participant;
     renderParticipantRoom(currentRoomCode, currentParticipant);
     startParticipantListeners();
@@ -189,7 +188,7 @@ function renderParticipantRoom(roomCode, participant) {
         </div>
 
         <div id="count-guide" class="count-guide" aria-label="Conteo 1 2 3 4">
-          ${[1, 2, 3, 4].map((number) => `<span class="count-number" data-count-number="${number}">${number}</span>`).join("")}
+          ${[1, 2, 3, 4].map((n) => `<span class="count-number" data-count-number="${n}">${n}</span>`).join("")}
         </div>
 
         <div class="pattern-panel" id="pattern-panel">
@@ -226,7 +225,6 @@ function renderParticipantRoom(roomCode, participant) {
       </section>
 
       <section id="participant-intro-overlay" class="participant-intro-overlay" hidden aria-live="polite"></section>
-
     </main>
   `;
 
@@ -235,9 +233,7 @@ function renderParticipantRoom(roomCode, participant) {
     if (!panel) return;
     panel.hidden = !panel.hidden;
     event.currentTarget.textContent = panel.hidden ? "¿Qué hago?" : "Ocultar ayuda";
-    if (!panel.hidden) {
-      panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
-    }
+    if (!panel.hidden) panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
   });
 
   document.getElementById("how-to-toggle").addEventListener("click", (event) => {
@@ -258,30 +254,22 @@ function startParticipantListeners() {
 
   cueUnsubscribe = listenToCue(currentRoomCode, (cue) => {
     updateParticipantCue(cue || createFallbackCue());
-  }, (error) => {
-    showConnectionError(error.message);
-  });
+  }, (error) => showConnectionError(error.message));
 
   roomUnsubscribe = listenToRoom(currentRoomCode, (room) => {
     currentRoom = room;
     updateRoomMeta(room);
-  }, (error) => {
-    showConnectionError(error.message);
-  });
+  }, (error) => showConnectionError(error.message));
 
   metronomeUnsubscribe = listenMetronome(currentRoomCode, (metronome) => {
     metronomeState = metronome;
     ensurePulseAnimation();
-  }, (error) => {
-    showConnectionError(error.message);
-  });
+  }, (error) => showConnectionError(error.message));
 
   patternsUnsubscribe = listenPatterns(currentRoomCode, (patterns) => {
     currentPatterns = sanitizePatterns(patterns || DEFAULT_PATTERNS);
     updateParticipantPatternPanel();
-  }, (error) => {
-    showConnectionError(error.message);
-  });
+  }, (error) => showConnectionError(error.message));
 
   serverOffsetUnsubscribe = listenServerTimeOffset((offset) => {
     serverTimeOffset = Number(offset || 0);
@@ -304,6 +292,10 @@ function cleanupParticipantListeners() {
     cancelAnimationFrame(pulseAnimationFrame);
     pulseAnimationFrame = null;
   }
+  lastStep16 = -2;
+  lastBeat = -1;
+  lastPulseBeat = null;
+  lastPulseActive = false;
 }
 
 function attachConnectionWatcher() {
@@ -311,7 +303,6 @@ function attachConnectionWatcher() {
   connectionUnsubscribe = listenToConnection((connected) => {
     const badge = document.getElementById("conn-badge");
     if (!badge) return;
-
     if (connected) {
       badge.classList.remove("is-offline");
       badge.innerHTML = `<span class="conn-dot"></span> Conectado a sala ${escapeHtml(currentRoomCode)}`;
@@ -323,10 +314,10 @@ function attachConnectionWatcher() {
 }
 
 function renderParticipantSteps(steps = []) {
-  const normalized = Array.from({ length: 16 }, (_, index) => Boolean(steps[index]));
-  return normalized.map((active, index) => `
-    <span class="step-dot ${active ? "is-pattern" : ""} ${index % 4 === 0 ? "is-accent" : ""}" data-step-index="${index}" title="Paso ${index + 1}"></span>
-  `).join("");
+  return Array.from({ length: 16 }, (_, index) => {
+    const active = Boolean(steps[index]);
+    return `<span class="step-dot ${active ? "is-pattern" : ""} ${index % 4 === 0 ? "is-accent" : ""}" data-step-index="${index}" title="Paso ${index + 1}"></span>`;
+  }).join("");
 }
 
 function updateParticipantPatternPanel() {
@@ -351,6 +342,7 @@ function updateParticipantPatternPanel() {
   if (helper) helper.textContent = pattern.helper || "Patrón actualizado";
   if (grid) {
     grid.innerHTML = renderParticipantSteps(pattern.steps);
+    lastStep16 = -2;
     updateParticipantStepCursor(currentStep16);
   }
   if (submessage) submessage.textContent = pattern.action || group?.action || "Sigue tu patrón";
@@ -374,17 +366,17 @@ function updateParticipantStepCursor(stepIndex) {
 }
 
 function updateRoomMeta(room) {
+  if (!room) return;
   const activityName = document.getElementById("activity-name");
   const roomTitle = document.getElementById("participant-room-title");
   const chantLyrics = document.getElementById("chant-lyrics");
   const groupLocation = document.getElementById("group-location");
-  if (!room) return;
 
   const activity = getActivityById(room.activity);
   const modeLabel = room.mode === "show" ? "Show" : "Ensayo";
   if (roomTitle) roomTitle.textContent = room.title || "Sala rítmica Musicala";
   if (activityName) activityName.textContent = `${activity.shortName} · ${room.bpm || activity.defaultBpm} BPM · ${modeLabel}`;
-  if (chantLyrics) chantLyrics.innerHTML = renderChantWords(getChantText(room), getCurrentBeatNumber());
+  if (chantLyrics) chantLyrics.innerHTML = renderChantWords(getChantText(room), getCurrentBeatProgress());
   if (groupLocation && currentParticipant) {
     const location = room.groupLocations?.[String(currentParticipant.group)] || "";
     groupLocation.textContent = location ? `Lugar: ${location}` : "";
@@ -392,7 +384,6 @@ function updateRoomMeta(room) {
   }
   updateParticipantIntroOverlay(room);
 }
-
 
 function ensurePulseAnimation() {
   if (pulseAnimationFrame) return;
@@ -413,7 +404,7 @@ function updatePulseVisual() {
 
   const bpm = clampNumber(Number(metronomeState?.bpm || currentRoom?.bpm || 96), 40, 240, 96);
   const enabled = Boolean(metronomeState?.enabled);
-  const startedAt = Number(metronomeState?.startedAt || metronomeState?.startedAtClient || 0);
+  const startedAt = Number(metronomeState?.startedAt || 0);
   const accentEvery = clampNumber(Number(metronomeState?.accentEvery || 4), 1, 16, 4);
 
   bpmEl.textContent = `BPM ${bpm}`;
@@ -424,9 +415,15 @@ function updatePulseVisual() {
     light.classList.remove("is-active", "is-accent");
     count.textContent = "–";
     meta.textContent = "Pulso en espera";
-    currentStep16 = -1;
-    updateParticipantStepCursor(-1);
-    updateCountGuide(-1);
+    if (currentStep16 !== -1) {
+      currentStep16 = -1;
+      lastStep16 = -2;
+      updateParticipantStepCursor(-1);
+    }
+    if (lastBeat !== -1) {
+      lastBeat = -1;
+      updateCountGuide(-1);
+    }
     lastPulseBeat = null;
     lastPulseActive = false;
     pulseAnimationFrame = requestAnimationFrame(updatePulseVisual);
@@ -436,14 +433,30 @@ function updatePulseVisual() {
   const serverNow = Date.now() + serverTimeOffset;
   const elapsed = Math.max(0, serverNow - startedAt);
   const beatDurationMs = 60000 / bpm;
+  const stepDurationMs = beatDurationMs / 4;
   const beatIndex = Math.floor(elapsed / beatDurationMs);
   const phase = (elapsed % beatDurationMs) / beatDurationMs;
   const currentBeat = (beatIndex % accentEvery) + 1;
-  const stepDurationMs = beatDurationMs / 4;
-  currentStep16 = Math.floor(elapsed / stepDurationMs) % 16;
-  updateParticipantStepCursor(currentStep16);
-  updateCountGuide(currentBeat);
-  updateChantKaraoke();
+  const step = Math.floor(elapsed / stepDurationMs) % 16;
+
+  // Solo actualiza el DOM del cursor cuando el paso cambia.
+  if (step !== lastStep16) {
+    currentStep16 = step;
+    lastStep16 = step;
+    updateParticipantStepCursor(step);
+  }
+
+  // Solo actualiza el conteo cuando el beat cambia.
+  if (currentBeat !== lastBeat) {
+    lastBeat = currentBeat;
+    updateCountGuide(currentBeat);
+  }
+
+  // Karaoke del canto (solo cuando está activo).
+  if (currentCueState?.type === "chant") {
+    updateChantKaraoke();
+  }
+
   const isActive = phase < 0.18;
   const isAccent = isActive && currentBeat === 1;
 
@@ -454,6 +467,7 @@ function updatePulseVisual() {
   light.classList.toggle("is-active", isActive);
   light.classList.toggle("is-accent", isAccent);
 
+  // Dispara la animación de golpe solo en el flanco de subida de cada beat.
   if (isActive && (!lastPulseActive || lastPulseBeat !== currentBeat)) {
     widget.classList.remove("pulse-hit");
     void widget.offsetWidth;
@@ -616,18 +630,11 @@ function getVisualStateForCue(cue, group, groupPattern = null) {
 }
 
 function createFallbackCue() {
-  return {
-    type: "prepare",
-    activeGroup: null,
-    message: "Prepárate",
-    subMessage: "Mira tu grupo y espera la entrada"
-  };
+  return { type: "prepare", activeGroup: null, message: "Prepárate", subMessage: "Mira tu grupo y espera la entrada" };
 }
 
 function vibrate(pattern) {
-  if ("vibrate" in navigator) {
-    navigator.vibrate(pattern);
-  }
+  if ("vibrate" in navigator) navigator.vibrate(pattern);
 }
 
 function updateCountGuide(currentBeat) {
@@ -636,9 +643,9 @@ function updateCountGuide(currentBeat) {
   });
 }
 
-function getCurrentBeatNumber() {
-  const current = document.querySelector(".count-number.is-current");
-  return current ? Number(current.dataset.countNumber) : -1;
+// Devuelve un progreso de 0–1 basado en qué beat estamos (para actualizar karaoke del canto al cambiar de beat).
+function getCurrentBeatProgress() {
+  return -1;
 }
 
 function updateChantKaraoke() {
@@ -649,19 +656,13 @@ function updateChantKaraoke() {
 }
 
 function getChantProgress(cue = currentCueState) {
-  const startedAt = Number(cue?.updatedAtClient || Date.now());
-  const elapsed = Math.max(0, Date.now() - startedAt);
-  return Math.min(1, elapsed / 3000);
+  if (!cue) return -1;
+  const startedAt = Number(cue.updatedAtClient || Date.now());
+  return Math.min(1, Math.max(0, Date.now() - startedAt) / 3000);
 }
 
 function getChantText(room = currentRoom) {
   return String(room?.chantText || CHANT_RESPONSE_TEXT);
-}
-
-function renderChantWords(text, progress = -1) {
-  const words = String(text || CHANT_RESPONSE_TEXT).split(/\s+/).filter(Boolean);
-  const litCount = progress >= 0 ? Math.ceil(Math.min(1, progress) * words.length) : 0;
-  return words.map((word, index) => `<span class="${index < litCount ? "is-lit" : ""}">${escapeHtml(word)}</span>`).join(" ");
 }
 
 function updateParticipantIntroOverlay(room = currentRoom) {
@@ -695,84 +696,19 @@ function updateParticipantIntroOverlay(room = currentRoom) {
 
 function getParticipantIntroSlides() {
   return [
-    {
-      bg: "bg-radial",
-      label: "Musicala · Especial",
-      title: "EL RESTAURANTE<br><em>TAMBIÉN</em><br><span>SUENA</span>",
-      body: "Especial Michael Jackson · They Don't Care About Us"
-    },
-    {
-      bg: "bg-radial",
-      label: "Atención, público querido",
-      title: "Atención,<br>público querido",
-      body: "En unos minutos este restaurante dejará de ser solo un restaurante."
-    },
-    {
-      bg: "bg-red",
-      label: "La canción de hoy",
-      title: "They Don't Care<br>About Us",
-      body: "Una canción intensa, directa, con energía de protesta y fuerza colectiva."
-    },
-    {
-      bg: "bg-radial",
-      label: "Michael Jackson",
-      title: "Más grande<br>que una tarima",
-      body: "Michael construía imágenes, coreografías y momentos más grandes que cualquier escenario."
-    },
-    {
-      bg: "bg-split",
-      label: "Spike Lee · Brasil",
-      title: "El video<br>que se quedó",
-      body: "Calles, comunidad, percusión, cuerpos en movimiento y pulso colectivo."
-    },
-    {
-      bg: "bg-musicala",
-      label: "El ritmo empieza aquí",
-      title: "En el cuerpo",
-      body: "Palmas, pies, piernas, mesa y vaso. Todos tienen una parte."
-    },
-    {
-      bg: "bg-red",
-      label: "Verdad liberadora",
-      title: "No hay que ser<br>músico profesional",
-      body: "Hay que escuchar, contar y entrar a tiempo."
-    },
-    {
-      bg: "bg-radial",
-      label: "La magia del ensamble",
-      title: "Sencillo<br>en el momento correcto",
-      body: "Cuando todo se junta, eso ya no es ruido: es ensamble."
-    },
-    {
-      bg: "bg-musicala",
-      label: "Tu misión de hoy",
-      title: "Cada grupo<br>tiene una parte",
-      body: "Pies, palmas, piernas y mesa / vaso entran poco a poco."
-    },
-    {
-      bg: "bg-red",
-      label: "La regla es simple",
-      title: "Cuenta siempre<br>1 · 2 · 3 · 4",
-      body: "Pantalla normal: espera. Pantalla morada: haz tu ritmo."
-    },
-    {
-      bg: "bg-radial",
-      label: "Frase coral",
-      title: "Lee. Escucha.<br>Responde.",
-      body: "No tiene que sonar perfecto. Tiene que sonar vivo."
-    },
-    {
-      bg: "bg-musicala",
-      label: "Prepárate",
-      title: "Escanea · Elige · Entra",
-      body: "Mira tu pantalla. Cuenta, espera y entra."
-    },
-    {
-      bg: "bg-radial",
-      label: "Porque hoy",
-      title: "El escenario<br>es todo el restaurante",
-      body: "Salvémoslos del Reggaetón 2026 · Especial Michael Jackson"
-    }
+    { bg: "bg-radial", label: "Musicala · Especial", title: "EL RESTAURANTE<br><em>TAMBIÉN</em><br><span>SUENA</span>", body: "Especial Michael Jackson · They Don't Care About Us" },
+    { bg: "bg-radial", label: "Atención, público querido", title: "Atención,<br>público querido", body: "En unos minutos este restaurante dejará de ser solo un restaurante." },
+    { bg: "bg-red", label: "La canción de hoy", title: "They Don't Care<br>About Us", body: "Una canción intensa, directa, con energía de protesta y fuerza colectiva." },
+    { bg: "bg-radial", label: "Michael Jackson", title: "Más grande<br>que una tarima", body: "Michael construía imágenes, coreografías y momentos más grandes que cualquier escenario." },
+    { bg: "bg-split", label: "Spike Lee · Brasil", title: "El video<br>que se quedó", body: "Calles, comunidad, percusión, cuerpos en movimiento y pulso colectivo." },
+    { bg: "bg-musicala", label: "El ritmo empieza aquí", title: "En el cuerpo", body: "Palmas, pies, piernas, mesa y vaso. Todos tienen una parte." },
+    { bg: "bg-red", label: "Verdad liberadora", title: "No hay que ser<br>músico profesional", body: "Hay que escuchar, contar y entrar a tiempo." },
+    { bg: "bg-radial", label: "La magia del ensamble", title: "Sencillo<br>en el momento correcto", body: "Cuando todo se junta, eso ya no es ruido: es ensamble." },
+    { bg: "bg-musicala", label: "Tu misión de hoy", title: "Cada grupo<br>tiene una parte", body: "Pies, palmas, piernas y mesa / vaso entran poco a poco." },
+    { bg: "bg-red", label: "La regla es simple", title: "Cuenta siempre<br>1 · 2 · 3 · 4", body: "Pantalla normal: espera. Pantalla morada: haz tu ritmo." },
+    { bg: "bg-radial", label: "Frase coral", title: "Lee. Escucha.<br>Responde.", body: "No tiene que sonar perfecto. Tiene que sonar vivo." },
+    { bg: "bg-musicala", label: "Prepárate", title: "Escanea · Elige · Entra", body: "Mira tu pantalla. Cuenta, espera y entra." },
+    { bg: "bg-radial", label: "Porque hoy", title: "El escenario<br>es todo el restaurante", body: "Salvémoslos del Reggaetón 2026 · Especial Michael Jackson" }
   ];
 }
 
@@ -785,7 +721,6 @@ function setButtonLoading(button, text) {
 function renderInlineError(container, message) {
   const oldError = container.querySelector(".inline-error");
   if (oldError) oldError.remove();
-
   const error = document.createElement("p");
   error.className = "inline-error";
   error.textContent = message;
@@ -798,19 +733,4 @@ function showConnectionError(message) {
   badge.classList.add("is-offline");
   badge.innerHTML = `<span class="conn-dot"></span> Error de conexión`;
   console.warn("Firebase listener error:", message);
-}
-
-
-function clampNumber(value, min, max, fallback) {
-  if (!Number.isFinite(value)) return fallback;
-  return Math.min(max, Math.max(min, Math.round(value)));
-}
-
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
 }

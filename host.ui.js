@@ -47,6 +47,7 @@ import {
 } from "./rhythms.js";
 import { AudioEngine, AUDIO_PRESETS } from "./audio.engine.js";
 import { DEMO_TRACKS } from "./demo-tracks.js";
+import { escapeHtml, buildParticipantUrl } from "./utils.js";
 
 const CHANT_AUDIO_SRC = "assets/audio/chant-phrase.mp3";
 const FINAL_VOCALS_AUDIO_SRC = "assets/audio/final-vocals.mp3";
@@ -1527,11 +1528,7 @@ async function copyParticipantUrl() {
 }
 
 function getParticipantUrl(roomCode) {
-  const url = new URL(window.location.href);
-  url.search = "";
-  url.hash = "";
-  url.searchParams.set("room", roomCode);
-  return url.toString();
+  return buildParticipantUrl(roomCode);
 }
 
 function getCurrentBpm() {
@@ -1581,15 +1578,6 @@ function formatFirebaseWriteError(error, fallback) {
   }
 
   return message || fallback;
-}
-
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
 }
 
 

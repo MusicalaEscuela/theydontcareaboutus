@@ -1,6 +1,6 @@
 // ============================================================
 // projector.ui.js
-// Vista para pantallas del restaurante.
+// Vista para pantallas del restaurante (admin).
 // ============================================================
 
 import {
@@ -10,6 +10,7 @@ import {
   normalizeRoomCode
 } from "./room.service.js";
 import { CHANT_RESPONSE_TEXT, DEFAULT_PATTERNS, GROUPS, getGroupPattern, sanitizePatterns } from "./rhythms.js";
+import { escapeHtml, clampNumber, renderChantWords, buildQrImageUrl, buildParticipantUrl } from "./utils.js";
 
 let currentRoomCode = "MJ30";
 let roomState = null;
@@ -17,18 +18,23 @@ let metronomeState = null;
 let serverTimeOffset = 0;
 let projectorFrame = null;
 let currentStep16 = -1;
+let lastStep16 = -2;
 let currentBeat = -1;
+let lastBeat = -2;
 let lastProjectorView = "";
 
 export function initProjector(roomCode) {
   currentRoomCode = normalizeRoomCode(roomCode);
   renderProjectorShell();
+
   window.addEventListener("storage", (event) => {
     if (event.key !== getLocalProjectorKey() || !event.newValue) return;
     applyLocalProjectorState(event.newValue);
   });
+
   const localState = localStorage.getItem(getLocalProjectorKey());
   if (localState) applyLocalProjectorState(localState);
+
   listenToRoom(currentRoomCode, (room) => {
     roomState = room;
     const local = readLocalProjectorState();
@@ -38,10 +44,12 @@ export function initProjector(roomCode) {
     renderProjectorContent();
     ensureProjectorLoop();
   });
+
   listenMetronome(currentRoomCode, (metronome) => {
     metronomeState = metronome;
     ensureProjectorLoop();
   });
+
   listenServerTimeOffset((offset) => {
     serverTimeOffset = Number(offset || 0);
     ensureProjectorLoop();
@@ -70,10 +78,7 @@ function applyLocalProjectorState(value) {
       bpm: roomState?.bpm || 96,
       currentCue: roomState?.currentCue || { type: "prepare" },
       patterns: roomState?.patterns || DEFAULT_PATTERNS,
-      projector: {
-        ...(roomState?.projector || {}),
-        ...projector
-      }
+      projector: { ...(roomState?.projector || {}), ...projector }
     };
     renderProjectorContent();
     ensureProjectorLoop();
@@ -83,11 +88,15 @@ function applyLocalProjectorState(value) {
 }
 
 function renderProjectorShell() {
+  const qrSrc = buildQrImageUrl(currentRoomCode);
+  const qrLink = buildParticipantUrl(currentRoomCode);
   document.getElementById("app").innerHTML = `
     <main class="projector-shell">
       <aside class="projector-qr-slot">
-        <img src="assets/qr.png" alt="QR de ingreso" onerror="this.hidden=true; this.nextElementSibling.hidden=false;" />
-        <span hidden>QR aquí</span>
+        <a href="${escapeHtml(qrLink)}" target="_blank" rel="noopener" title="Entrar a la sala">
+          <img src="${escapeHtml(qrSrc)}" alt="QR de ingreso · ${escapeHtml(qrLink)}" onerror="this.hidden=true; this.nextElementSibling.hidden=false;" />
+          <span hidden>QR aquí</span>
+        </a>
       </aside>
       <section id="projector-content" class="projector-content"></section>
     </main>
@@ -99,9 +108,8 @@ function renderProjectorContent() {
   if (!target || !roomState) return;
 
   const projector = roomState.projector || {};
-  if (lastProjectorView !== projector.view) {
-    lastProjectorView = projector.view || "";
-  }
+  lastProjectorView = projector.view || "";
+
   if (projector.view === "intro") {
     renderIntroDeck(target);
     return;
@@ -119,7 +127,7 @@ function renderProjectorContent() {
     <div class="projector-topbar">
       <strong>${escapeHtml(roomState.title || "Sala rítmica Musicala")}</strong>
       <div id="projector-count-guide" class="projector-count-guide" aria-label="Conteo 1 2 3 4">
-        ${[1, 2, 3, 4].map((number) => `<span class="projector-count-number" data-projector-count="${number}">${number}</span>`).join("")}
+        ${[1, 2, 3, 4].map((n) => `<span class="projector-count-number" data-projector-count="${n}">${n}</span>`).join("")}
       </div>
       <span>Sala ${escapeHtml(currentRoomCode)}</span>
     </div>
@@ -137,6 +145,10 @@ function renderProjectorContent() {
       ` : ""}
     </div>
   `;
+
+  // Fuerza reset de caché de paso/beat para que el loop los pinte de inmediato.
+  lastStep16 = -2;
+  lastBeat = -2;
 }
 
 function renderIntroDeck(target) {
@@ -156,89 +168,6 @@ function renderIntroDeck(target) {
       </section>
     </div>
   `;
-}
-
-function getIntroSlides() {
-  return [
-    {
-      bg: "bg-radial",
-      label: "Musicala · Especial",
-      title: "EL RESTAURANTE<br><em>TAMBIÉN</em><br><span>SUENA</span>",
-      body: "<p>Especial Michael Jackson · They Don't Care About Us</p>"
-    },
-    {
-      bg: "bg-radial",
-      label: "Atención, público querido",
-      title: "Atención,<br>público querido",
-      body: "<p>En unos minutos este restaurante dejará de ser solo un restaurante.</p><p>Las mesas, las palmas, los pies y las voces van a tener trabajo.</p>"
-    },
-    {
-      bg: "bg-red",
-      label: "La canción de hoy",
-      title: "They Don't Care<br>About Us",
-      body: "<p>Una canción <strong>intensa, directa</strong>, con energía de protesta, fuerza colectiva y una frase que se queda dando vueltas.</p>"
-    },
-    {
-      bg: "bg-radial",
-      label: "Michael Jackson",
-      title: "Más grande<br>que una tarima",
-      body: "<p>Michael construía imágenes, coreografías y momentos que parecían más grandes que cualquier escenario.</p>"
-    },
-    {
-      bg: "bg-split",
-      label: "Spike Lee · Brasil",
-      title: "El video<br>que se quedó",
-      body: "<p>Calles, comunidad, percusión, cuerpos en movimiento y una sensación clara: la música vive en la gente.</p>"
-    },
-    {
-      bg: "bg-musicala",
-      label: "El ritmo empieza aquí",
-      title: "En el cuerpo",
-      body: "<p>El ritmo puede empezar con palmas, pies, piernas, mesa y vaso. La gente reunida haciendo algo al mismo tiempo.</p>"
-    },
-    {
-      bg: "bg-red",
-      label: "Verdad liberadora",
-      title: "No hay que ser<br>músico profesional",
-      body: "<p>Hay que <strong>escuchar</strong>, <strong>contar</strong> y <strong>entrar a tiempo</strong>.</p>"
-    },
-    {
-      bg: "bg-radial",
-      label: "La magia del ensamble",
-      title: "Sencillo<br>en el momento correcto",
-      body: "<p>Uno sostiene el pulso, otro responde, otro agrega textura. Cuando todo se junta, eso ya no es ruido: es ensamble.</p>"
-    },
-    {
-      bg: "bg-musicala",
-      label: "Tu misión de hoy",
-      title: "Cada grupo<br>tiene una parte",
-      body: "<p>Pies sostienen el pulso. Palmas responden. Piernas hacen base. Mesa / vaso agrega golpes rítmicos.</p>"
-    },
-    {
-      bg: "bg-red",
-      label: "La regla es simple",
-      title: "Cuenta siempre<br>1 · 2 · 3 · 4",
-      body: "<p>Pantalla normal: espera y sigue contando. Pantalla morada: haz tu ritmo. TODOS AHORA: entran todos.</p>"
-    },
-    {
-      bg: "bg-radial",
-      label: "Frase coral",
-      title: "Lee. Escucha.<br>Responde.",
-      body: "<p>No tiene que sonar perfecto. Tiene que sonar vivo, con energía, escucha y conexión.</p>"
-    },
-    {
-      bg: "bg-musicala",
-      label: "Prepárate",
-      title: "Escanea · Elige · Entra",
-      body: "<p>Escanea el QR, entra a la sala y mira tu pantalla. Cuenta, espera y entra.</p>"
-    },
-    {
-      bg: "bg-radial",
-      label: "Porque hoy",
-      title: "El escenario<br>es todo el restaurante",
-      body: "<p>Salvémoslos del Reggaetón 2026 · Especial Michael Jackson · Musicala</p>"
-    }
-  ];
 }
 
 function renderProjectorGroup(group, patterns, cue) {
@@ -273,26 +202,41 @@ function ensureProjectorLoop() {
 
 function updateProjectorLoop() {
   updatePulseState();
-  updateProjectorCount();
-  updateProjectorSteps();
+
+  // Cursor de paso: solo actualiza el DOM cuando el paso cambia.
+  if (currentStep16 !== lastStep16) {
+    lastStep16 = currentStep16;
+    updateProjectorSteps();
+  }
+
+  // Conteo de beat: solo actualiza cuando el beat cambia.
+  if (currentBeat !== lastBeat) {
+    lastBeat = currentBeat;
+    updateProjectorCount();
+  }
+
+  // Karaoke del canto: actualiza cada frame solo si está activo.
   const lyrics = document.getElementById("projector-chant-lyrics");
   const cue = roomState?.currentCue || {};
   if (lyrics && cue.type === "chant") {
     lyrics.innerHTML = renderChantWords(getChantText(), getChantProgress(cue));
   }
+
   projectorFrame = requestAnimationFrame(updateProjectorLoop);
 }
 
 function updatePulseState() {
   const bpm = clampNumber(Number(metronomeState?.bpm || roomState?.bpm || 96), 40, 240, 96);
   const enabled = Boolean(metronomeState?.enabled);
-  const startedAt = Number(metronomeState?.startedAt || metronomeState?.startedAtClient || 0);
+  const startedAt = Number(metronomeState?.startedAt || 0);
   const accentEvery = clampNumber(Number(metronomeState?.accentEvery || 4), 1, 16, 4);
+
   if (!enabled || !startedAt) {
     currentStep16 = -1;
     currentBeat = -1;
     return;
   }
+
   const serverNow = Date.now() + serverTimeOffset;
   const elapsed = Math.max(0, serverNow - startedAt);
   const beatDurationMs = 60000 / bpm;
@@ -325,22 +269,20 @@ function getChantProgress(cue) {
   return Math.min(1, Math.max(0, Date.now() - startedAt) / 3000);
 }
 
-function renderChantWords(text, progress = -1) {
-  const words = String(text || CHANT_RESPONSE_TEXT).split(/\s+/).filter(Boolean);
-  const litCount = progress >= 0 ? Math.ceil(Math.min(1, progress) * words.length) : 0;
-  return words.map((word, index) => `<span class="${index < litCount ? "is-lit" : ""}">${escapeHtml(word)}</span>`).join(" ");
-}
-
-function clampNumber(value, min, max, fallback) {
-  if (!Number.isFinite(value)) return fallback;
-  return Math.min(max, Math.max(min, Math.round(value)));
-}
-
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
+function getIntroSlides() {
+  return [
+    { bg: "bg-radial", label: "Musicala · Especial", title: "EL RESTAURANTE<br><em>TAMBIÉN</em><br><span>SUENA</span>", body: "<p>Especial Michael Jackson · They Don't Care About Us</p>" },
+    { bg: "bg-radial", label: "Atención, público querido", title: "Atención,<br>público querido", body: "<p>En unos minutos este restaurante dejará de ser solo un restaurante.</p><p>Las mesas, las palmas, los pies y las voces van a tener trabajo.</p>" },
+    { bg: "bg-red", label: "La canción de hoy", title: "They Don't Care<br>About Us", body: "<p>Una canción <strong>intensa, directa</strong>, con energía de protesta, fuerza colectiva y una frase que se queda dando vueltas.</p>" },
+    { bg: "bg-radial", label: "Michael Jackson", title: "Más grande<br>que una tarima", body: "<p>Michael construía imágenes, coreografías y momentos que parecían más grandes que cualquier escenario.</p>" },
+    { bg: "bg-split", label: "Spike Lee · Brasil", title: "El video<br>que se quedó", body: "<p>Calles, comunidad, percusión, cuerpos en movimiento y una sensación clara: la música vive en la gente.</p>" },
+    { bg: "bg-musicala", label: "El ritmo empieza aquí", title: "En el cuerpo", body: "<p>El ritmo puede empezar con palmas, pies, piernas, mesa y vaso. La gente reunida haciendo algo al mismo tiempo.</p>" },
+    { bg: "bg-red", label: "Verdad liberadora", title: "No hay que ser<br>músico profesional", body: "<p>Hay que <strong>escuchar</strong>, <strong>contar</strong> y <strong>entrar a tiempo</strong>.</p>" },
+    { bg: "bg-radial", label: "La magia del ensamble", title: "Sencillo<br>en el momento correcto", body: "<p>Uno sostiene el pulso, otro responde, otro agrega textura. Cuando todo se junta, eso ya no es ruido: es ensamble.</p>" },
+    { bg: "bg-musicala", label: "Tu misión de hoy", title: "Cada grupo<br>tiene una parte", body: "<p>Pies sostienen el pulso. Palmas responden. Piernas hacen base. Mesa / vaso agrega golpes rítmicos.</p>" },
+    { bg: "bg-red", label: "La regla es simple", title: "Cuenta siempre<br>1 · 2 · 3 · 4", body: "<p>Pantalla normal: espera y sigue contando. Pantalla morada: haz tu ritmo. TODOS AHORA: entran todos.</p>" },
+    { bg: "bg-radial", label: "Frase coral", title: "Lee. Escucha.<br>Responde.", body: "<p>No tiene que sonar perfecto. Tiene que sonar vivo, con energía, escucha y conexión.</p>" },
+    { bg: "bg-musicala", label: "Prepárate", title: "Escanea · Elige · Entra", body: "<p>Escanea el QR, entra a la sala y mira tu pantalla. Cuenta, espera y entra.</p>" },
+    { bg: "bg-radial", label: "Porque hoy", title: "El escenario<br>es todo el restaurante", body: "<p>Salvémoslos del Reggaetón 2026 · Especial Michael Jackson · Musicala</p>" }
+  ];
 }

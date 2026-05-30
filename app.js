@@ -1,6 +1,7 @@
 // ============================================================
 // app.js
-// Punto de entrada: detecta modo host/participante/landing.
+// Punto de entrada: detecta modo host/admin/participante/landing.
+// Host solo es accesible por URL (?host).
 // ============================================================
 
 import { ensureAuth } from "./firebase-config.js";
@@ -8,6 +9,7 @@ import { initHost } from "./host.ui.js";
 import { initParticipant } from "./participant.ui.js";
 import { initProjector } from "./projector.ui.js";
 import { normalizeRoomCode } from "./room.service.js";
+import { escapeHtml } from "./utils.js";
 
 window.addEventListener("DOMContentLoaded", bootstrapApp);
 
@@ -70,20 +72,14 @@ function renderLanding() {
         <div class="landing-actions">
           <form id="participant-entry" class="entry-card">
             <span class="entry-icon">📱</span>
-            <h2>Participante</h2>
-            <p>Entra con el código de sala.</p>
-            <input class="text-input" name="room" value="MJ30" maxlength="24" aria-label="Código de sala participante" />
+            <h2>Entrar a la sala</h2>
+            <p>Ingresa el código que te dieron.</p>
+            <input class="text-input" name="room" value="MJ30" maxlength="24" aria-label="Código de sala" autocomplete="off" />
             <button class="primary-action" type="submit">Entrar</button>
           </form>
-
-          <form id="host-entry" class="entry-card host-entry-card">
-            <span class="entry-icon">🎛️</span>
-            <h2>Host</h2>
-            <p>Controla la actividad en vivo.</p>
-            <input class="text-input" name="room" value="MJ30" maxlength="24" aria-label="Código de sala host" />
-            <button class="secondary-action" type="submit">Abrir panel host</button>
-          </form>
         </div>
+
+        <p class="microcopy">No necesitas instalar nada. Qué civilizado por una vez.</p>
       </section>
     </main>
   `;
@@ -93,19 +89,4 @@ function renderLanding() {
     const room = normalizeRoomCode(new FormData(event.currentTarget).get("room"));
     window.location.href = `?room=${encodeURIComponent(room)}`;
   });
-
-  document.getElementById("host-entry").addEventListener("submit", (event) => {
-    event.preventDefault();
-    const room = normalizeRoomCode(new FormData(event.currentTarget).get("room"));
-    window.location.href = `?host=1&room=${encodeURIComponent(room)}`;
-  });
-}
-
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
 }
