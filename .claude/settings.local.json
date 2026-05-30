@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd \"/c/Users/USER/Desktop/Catalina Medina/Disco duro/Users/Desktop/Programación/Musicala/Full 80\" && find . -type f -o -type d | sort)"
+    ]
+  }
+}
